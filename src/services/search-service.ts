@@ -10,6 +10,7 @@
 import type { CardStore } from '../db/cards.js';
 import type { KeywordSearch } from '../db/search.js';
 import type { MatchedBy, SearchMode, SearchHit } from '../db/types.js';
+import { SEMANTIC_INSTALL_HINT } from '../semantic-stack.js';
 import type { SemanticSearch } from './semantic-search.js';
 
 /** Thrown when semantic mode is requested but the index is not ready. */
@@ -17,6 +18,14 @@ export class IndexNotReadyError extends Error {
   constructor() {
     super('The semantic index is not ready yet');
     this.name = 'IndexNotReadyError';
+  }
+}
+
+/** Thrown when semantic mode is requested but the semantic stack is missing. */
+export class SemanticStackNotInstalledError extends Error {
+  constructor() {
+    super(SEMANTIC_INSTALL_HINT);
+    this.name = 'SemanticStackNotInstalledError';
   }
 }
 
@@ -49,7 +58,8 @@ export class SearchService {
    * Run a search.
    * - keyword: FTS5 + cues + unindexed-card fallback
    * - semantic: vector top-k + unindexed-card fallback (503-style error
-   *   via IndexNotReadyError while the index is not ready)
+   *   via IndexNotReadyError while the index is not ready, 501-style via
+   *   SemanticStackNotInstalledError when the stack is not installed)
    * - auto: semantic when the index is ready, keyword otherwise
    */
   async search(query: string, mode: SearchMode, limit: number): Promise<SearchOutcome> {
@@ -60,6 +70,9 @@ export class SearchService {
     const semantic = this.deps.semantic;
     if (semantic === null || !semantic.ready) {
       if (mode === 'semantic') {
+        if (semantic?.notInstalled === true) {
+          throw new SemanticStackNotInstalledError();
+        }
         throw new IndexNotReadyError();
       }
       return { results: this.deps.keyword.search(query, limit), modeUsed: 'keyword' };

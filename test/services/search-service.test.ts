@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { IndexNotReadyError, SearchService } from '../../src/services/search-service.js';
+import {
+  IndexNotReadyError,
+  SearchService,
+  SemanticStackNotInstalledError,
+} from '../../src/services/search-service.js';
 import { SemanticSearch } from '../../src/services/semantic-search.js';
 import {
   cardInput,
@@ -64,6 +68,48 @@ describe('SearchService', () => {
       const outcome = await service.search('docker', 'auto', 10);
       expect(outcome.modeUsed).toBe('keyword');
       expect(outcome.results).toHaveLength(1);
+    } finally {
+      t.close();
+    }
+  });
+
+  it('semantic mode throws SemanticStackNotInstalledError when the stack is missing', async () => {
+    const { t, semantic, service } = setup();
+    try {
+      semantic.markNotInstalled();
+      await expect(service.search('x', 'semantic', 10)).rejects.toBeInstanceOf(
+        SemanticStackNotInstalledError
+      );
+      // The message tells users how to install the stack.
+      const error = await service.search('x', 'semantic', 10).catch(caught => caught);
+      expect((error as Error).message).toContain('npm install');
+    } finally {
+      t.close();
+    }
+  });
+
+  it('auto mode still degrades to keyword when the stack is missing', async () => {
+    const { t, semantic, service } = setup();
+    try {
+      t.cards.createCard(cardInput({ title: 'docker deploy', body: 'containers' }));
+      semantic.markNotInstalled();
+      const outcome = await service.search('docker', 'auto', 10);
+      expect(outcome.modeUsed).toBe('keyword');
+      expect(outcome.results).toHaveLength(1);
+    } finally {
+      t.close();
+    }
+  });
+
+  it('setReady clears the not-installed state', async () => {
+    const { t, vectors, semantic, service } = setup();
+    try {
+      indexCardForQuery(t, vectors, 'needle', { title: 'indexed', body: 'body' });
+      semantic.markNotInstalled();
+      semantic.setReady(true);
+      expect(semantic.notInstalled).toBe(false);
+      const outcome = await service.search('needle', 'semantic', 10);
+      expect(outcome.modeUsed).toBe('semantic');
     } finally {
       t.close();
     }

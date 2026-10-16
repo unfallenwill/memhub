@@ -2,6 +2,8 @@
  * HTTP error type with the unified {error:{code,message}} body shape.
  */
 
+import { SEMANTIC_INSTALL_HINT } from '../semantic-stack.js';
+
 /** An error that maps directly to an HTTP response. */
 export class ApiError extends Error {
   constructor(
@@ -37,6 +39,11 @@ export function notFound(message = 'Not found'): ApiError {
 /** 503 - semantic index not ready yet. */
 export function indexNotReady(): ApiError {
   return new ApiError(503, 'index_not_ready', 'The semantic index is not ready yet');
+}
+
+/** 501 - the optional semantic stack packages are not installed. */
+export function semanticNotInstalled(): ApiError {
+  return new ApiError(501, 'semantic_not_installed', SEMANTIC_INSTALL_HINT);
 }
 
 /** 404 - the web UI dist directory does not contain index.html. */

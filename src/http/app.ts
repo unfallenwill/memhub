@@ -21,7 +21,11 @@ import { EventStore } from '../db/events.js';
 import { KeywordSearch } from '../db/search.js';
 import { CARD_STATUSES, CARD_TYPES, SEARCH_MODES, type CardRecord } from '../db/types.js';
 import { WorkerStateStore } from '../db/worker-state.js';
-import { IndexNotReadyError, SearchService } from '../services/search-service.js';
+import {
+  IndexNotReadyError,
+  SearchService,
+  SemanticStackNotInstalledError,
+} from '../services/search-service.js';
 import type { SemanticSearch } from '../services/semantic-search.js';
 import { registerDeviceAuthRoutes } from './device-auth.js';
 import {
@@ -30,6 +34,7 @@ import {
   invalidHost,
   invalidRequest,
   notFound,
+  semanticNotInstalled,
   unauthorized,
   webUiNotBuilt,
 } from './errors.js';
@@ -284,6 +289,9 @@ export function createApp(deps: AppDeps): Hono {
     } catch (error) {
       if (error instanceof IndexNotReadyError) {
         throw indexNotReady();
+      }
+      if (error instanceof SemanticStackNotInstalledError) {
+        throw semanticNotInstalled();
       }
       throw error;
     }

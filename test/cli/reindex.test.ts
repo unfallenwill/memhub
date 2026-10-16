@@ -8,7 +8,7 @@ import { EventStore } from '../../src/db/events.js';
 import { ActivityLog } from '../../src/db/activity.js';
 import { WorkerStateStore } from '../../src/db/worker-state.js';
 import { runReindexCommand } from '../../src/cli/reindex.js';
-import { cardInput, FakeEmbedder, FakeVectorStore } from '../test-utils.js';
+import { cardInput, FakeEmbedder, FakeVectorStore, moduleNotFoundError } from '../test-utils.js';
 
 /**
  * A temporary MemHub home with a database. Unlike createTestDb, closing
@@ -134,6 +134,36 @@ describe('runReindexCommand', () => {
       }
     } finally {
       rmSync(empty, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
+
+  it('explains how to install the semantic stack when it is missing', async () => {
+    const t = createDbHome();
+    try {
+      t.cards.createCard(cardInput({ title: 'One', body: 'b1' }));
+      t.closeDb();
+
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const code = await runReindexCommand({
+          home: t.home,
+          vectors: new FakeVectorStore(),
+          embedder: new FakeEmbedder({
+            failLoad: true,
+            failLoadWith: moduleNotFoundError('@huggingface/transformers'),
+          }),
+        });
+        expect(code).toBe(1);
+        const messages = error.mock.calls.map(call => call.join(' ')).join('\n');
+        expect(messages).toContain('the semantic stack is not installed');
+        expect(messages).toContain('npm install @huggingface/transformers @lancedb/lancedb');
+      } finally {
+        error.mockRestore();
+        log.mockRestore();
+      }
+    } finally {
+      t.cleanup();
     }
   });
 });

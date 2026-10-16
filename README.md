@@ -22,6 +22,12 @@ memhub server          # start the daemon (background, 127.0.0.1:7800)
 npx skills add unfallenwill/memhub -g   # optional: teach your agent to use it
 ```
 
+Keyword search works out of the box. Semantic search is an optional add-on: its packages (a local ONNX embedding runtime and LanceDB, ~1 GB together) are optional peer dependencies so the default install stays small. To enable it, install them next to memhub and restart:
+
+```bash
+npm install -g @huggingface/transformers @lancedb/lancedb
+```
+
 Write a card from your agent (via the memhub skill) or any hook:
 
 ```bash
@@ -40,7 +46,7 @@ curl -s -X POST http://127.0.0.1:7800/api/cards \
   -d '{"title":"Use pnpm in this repo","body":"All commands run via **npx pnpm**.","type":"preference","cues":["pnpm","build"],"writer":"claude-hook"}'
 ```
 
-Search — keyword works instantly, semantic kicks in once the local embedding model loads:
+Search — keyword works instantly; with the semantic stack installed, semantic search kicks in once the local embedding model loads (in the background):
 
 ```bash
 memhub search "package manager"
@@ -63,6 +69,7 @@ hook (curl) ──► HTTP API ──► SQLite (cards, events, activity log)   
 ```
 
 - **SQLite is the single source of truth** (`~/.memhub/memhub.db`, WAL); FTS5 and vector indexes are derived artifacts — `memhub reindex` rebuilds them at any time.
+- **Semantic search is optional** — `@huggingface/transformers` and `@lancedb/lancedb` are optional peer dependencies imported lazily. Without them the daemon runs keyword-only: `auto` mode degrades to keyword, explicit `semantic` requests answer `501 semantic_not_installed` with the install command.
 - **Event-driven indexing** — the worker consumes an event table with a transactional offset; failed items are recorded and skipped, an hourly compensation scan catches strays.
 - **Freshly written cards are always searchable** — keyword search (FTS5 + cues) covers not-yet-indexed cards, so existence is never eventually-consistent.
 - **Local & private** — listens on 127.0.0.1 only, token-authenticated API, rejects non-local `Host` headers, no external services.
@@ -74,7 +81,7 @@ hook (curl) ──► HTTP API ──► SQLite (cards, events, activity log)   
 | `memhub server [--port] [--foreground]` | Start daemon (duplicate-start safe) |
 | `memhub status` | Health, stats, queue backlog |
 | `memhub stop` | Graceful stop, force-kill fallback |
-| `memhub reindex` | Rebuild the vector index from SQLite |
+| `memhub reindex` | Rebuild the vector index from SQLite (needs the semantic stack) |
 | `memhub add [options]` | Write a card (agent-facing; stdin body supported) |
 | `memhub search <query> [options]` | Search cards, print one-line JSON |
 | `memhub login <url>` | Log in to a remote daemon (device flow) |

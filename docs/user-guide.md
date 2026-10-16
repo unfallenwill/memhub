@@ -12,22 +12,30 @@ npx -y memhub@latest stop     # Ask the daemon to shut down
 
 The daemon listens on `127.0.0.1` only. All API requests (except `GET /healthz`) must carry the token stored in `~/.memhub/token` in the `X-Memhub-Token` header.
 
+Keyword search works out of the box. Semantic search needs two optional packages (~1 GB; they are optional peer dependencies, so the default install stays small):
+
+```bash
+npm install -g @huggingface/transformers @lancedb/lancedb   # next to memhub
+```
+
+Restart the daemon afterwards; it detects them at startup and starts indexing in the background. Without them the daemon runs keyword-only — `auto` search degrades to keyword, and explicit `semantic` requests answer `501 semantic_not_installed`.
+
 ## Commands
 
-| Command                       | Description                                           |
-| ----------------------------- | ----------------------------------------------------- |
-| `memhub server`               | Start the daemon in the background (detached)         |
-| `memhub server --foreground`  | Run the daemon in the current process (for debugging) |
-| `memhub server --port 7900`   | Pick a different port                                 |
-| `memhub status [--port]`      | Ping `/healthz` and print pid, uptime, stats          |
-| `memhub stop [--port]`        | Graceful shutdown; force-kills after 5 seconds        |
-| `memhub reindex`              | Rebuild the vector index from SQLite                  |
-| `memhub add [options]`        | Write a card; prints the JSON result (agent-facing)   |
-| `memhub search <query> [opt]` | Search cards; prints one line of JSON (agent-facing)  |
-| `memhub login <url>`          | Log in to a remote daemon (device flow, see below)    |
-| `memhub logout`               | Revoke the stored login token                         |
-| `memhub reset-password`       | Clear the admin password (run on the server)          |
-| `memhub --help` / `--version` | Usage and version                                     |
+| Command                       | Description                                                     |
+| ----------------------------- | --------------------------------------------------------------- |
+| `memhub server`               | Start the daemon in the background (detached)                   |
+| `memhub server --foreground`  | Run the daemon in the current process (for debugging)           |
+| `memhub server --port 7900`   | Pick a different port                                           |
+| `memhub status [--port]`      | Ping `/healthz` and print pid, uptime, stats                    |
+| `memhub stop [--port]`        | Graceful shutdown; force-kills after 5 seconds                  |
+| `memhub reindex`              | Rebuild the vector index from SQLite (needs the semantic stack) |
+| `memhub add [options]`        | Write a card; prints the JSON result (agent-facing)             |
+| `memhub search <query> [opt]` | Search cards; prints one line of JSON (agent-facing)            |
+| `memhub login <url>`          | Log in to a remote daemon (device flow, see below)              |
+| `memhub logout`               | Revoke the stored login token                                   |
+| `memhub reset-password`       | Clear the admin password (run on the server)                    |
+| `memhub --help` / `--version` | Usage and version                                               |
 
 Starting `memhub server` when a daemon is already running prints the running pid and exits with code 0. If another program owns the port, MemHub suggests `--port` and exits with code 1.
 
@@ -87,8 +95,8 @@ curl -s -X POST http://127.0.0.1:7800/api/search \
 
 - `mode` is `auto` (default), `semantic`, or `keyword`.
 - **keyword** uses SQLite FTS5 over title+body plus cue matching.
-- **semantic** embeds the query and finds the nearest cards in the local vector index (LanceDB + a Transformers.js ONNX model). It answers `503 index_not_ready` until the embedding model is loaded.
-- **auto** uses semantic search once the index is ready and degrades to keyword search before that.
+- **semantic** embeds the query and finds the nearest cards in the local vector index (LanceDB + a Transformers.js ONNX model). It answers `503 index_not_ready` until the embedding model is loaded, and `501 semantic_not_installed` when the optional semantic packages are missing — install them next to memhub (`npm install @huggingface/transformers @lancedb/lancedb`) and restart the daemon.
+- **auto** uses semantic search once the index is ready and degrades to keyword search before that (and while the semantic stack is not installed).
 - Every mode includes a keyword fallback over active cards that have not been vector-indexed yet, deduplicated by card id, so a freshly written card is always searchable.
 - Non-active cards (archived, superseded, ...) are excluded by default.
 - Matched cards get their `hit_count` and `last_accessed_at` updated. Each result carries `score` and `matched_by` (`fts` | `cues` | `fallback` | `semantic`).
@@ -248,6 +256,7 @@ Do this promptly: the first completed login defines the server's admin password.
 - **`401 unauthorized`** — send the token from `~/.memhub/token` (or `MEMHUB_TOKEN`) as `X-Memhub-Token`; on remote daemons log in first (`memhub login <url>`).
 - **`403 invalid_host`** — call `http://127.0.0.1:7800` (or `localhost`), or add your hostname to `MEMHUB_ALLOWED_HOSTS`.
 - **`503 index_not_ready`** — the embedding model is still loading (or its download failed); keyword and `auto` search keep working.
+- **`501 semantic_not_installed`** — the optional semantic packages are not installed. The daemon runs keyword-only; install `@huggingface/transformers` and `@lancedb/lancedb` next to memhub (e.g. `npm install -g @huggingface/transformers @lancedb/lancedb`) and restart. `memhub reindex` needs them too.
 - **`The login code expired`** — the 5-minute window elapsed (or the daemon restarted, which drops in-flight logins). Run `memhub login` again.
 - **`403` during `memhub login`** — the daemon's `MEMHUB_ALLOWED_HOSTS` must include the hostname you use in the URL.
 - **Forgot the admin password** — on the server: `memhub stop`, then `memhub reset-password` (clears the password and revokes all devices), then start the daemon and `memhub login` again.

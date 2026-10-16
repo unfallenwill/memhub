@@ -5,9 +5,13 @@
  * derived index that can be rebuilt at any time (`memhub reindex`, or the
  * automatic rebuild when the embedding model changes). Writes are
  * delete+insert per card_id, which makes re-indexing idempotent.
+ *
+ * @lancedb/lancedb is an optional peer dependency and is imported lazily
+ * inside connect(), so this module (and everything that imports it, which
+ * includes the whole CLI) loads even when the package is not installed.
  */
 
-import * as lancedb from '@lancedb/lancedb';
+import type * as lancedb from '@lancedb/lancedb';
 
 /** Name of the LanceDB table holding card vectors. */
 export const CARD_VECTORS_TABLE = 'card_vectors';
@@ -114,7 +118,8 @@ export class LanceVectorIndex implements CardVectorStore {
   }
 
   private async connect(): Promise<void> {
-    this.connection = await lancedb.connect(this.dbPath);
+    const lancedbModule = await import('@lancedb/lancedb');
+    this.connection = await lancedbModule.connect(this.dbPath);
     const names = await this.connection.tableNames();
     if (names.includes(CARD_VECTORS_TABLE)) {
       this.table = await this.connection.openTable(CARD_VECTORS_TABLE);

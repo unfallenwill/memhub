@@ -55,10 +55,18 @@ RUN npm install -g pnpm@12 \
  && rm -rf /var/lib/apt/lists/*
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/package.json
+# The semantic stack (@huggingface/transformers, @lancedb/lancedb) ships as
+# optional peer dependencies so a plain `npm install memhub` stays small;
+# the image always includes it. --lockfile-only promotes the peer ranges to
+# regular dependencies in this stage's manifest, so the --prod install
+# below (and the native pruning that follows) picks them up.
 # --filter memhub: runtime deps of the daemon only (the web workspace's
 # deps are build-time only; its compiled assets are copied from `build`).
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm config set store-dir /pnpm/store \
+ && pnpm add -w --save-prod --lockfile-only \
+      "@huggingface/transformers@$(node -p "require('./package.json').peerDependencies['@huggingface/transformers']")" \
+      "@lancedb/lancedb@$(node -p "require('./package.json').peerDependencies['@lancedb/lancedb']")" \
  && pnpm install --frozen-lockfile --prod --filter memhub
 
 # Keep only the native binaries the Linux runtime can load.

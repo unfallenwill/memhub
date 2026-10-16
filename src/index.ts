@@ -10,4 +10,5 @@ export * from './services/index.js';
 export * from './storage/index.js';
 export * from './worker/index.js';
 export * from './paths.js';
+export * from './semantic-stack.js';
 export * from './version.js';

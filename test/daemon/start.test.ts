@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   EMBEDDING_MODEL_ID,
   TransformersEmbedder,
@@ -15,7 +15,7 @@ import {
 } from '../../src/daemon/start.js';
 import { LanceVectorIndex } from '../../src/storage/vector-index.js';
 import { getTokenPath } from '../../src/paths.js';
-import { createTestDb, FakeEmbedder, FakeVectorStore } from '../test-utils.js';
+import { createTestDb, FakeEmbedder, FakeVectorStore, moduleNotFoundError } from '../test-utils.js';
 
 describe('startDaemon', () => {
   // Regression guard: @hono/node-server replaces global Request/Response by
@@ -228,6 +228,67 @@ describe('worker failure handling', () => {
         await new Promise(resolve => setTimeout(resolve, 350));
         expect(failing.ensureLoadedCalls).toBeGreaterThan(1);
       } finally {
+        await handle.close();
+      }
+    }
+  );
+});
+
+describe('missing semantic stack handling', () => {
+  it(
+    'degrades to keyword-only mode without retrying when the packages are missing',
+    { timeout: 15_000 },
+    async () => {
+      const t = createTestDb();
+      t.close();
+      const missing = new FakeEmbedder({
+        failLoad: true,
+        failLoadWith: moduleNotFoundError('@huggingface/transformers'),
+      });
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const handle = await startDaemon({
+        home: t.home,
+        port: 0,
+        worker: { embedder: missing, vectors: new FakeVectorStore(), retryDelayMs: 100 },
+      });
+      try {
+        const token = readFileSync(getTokenPath(t.home), 'utf-8').trim();
+
+        // Keyword search keeps working.
+        await fetch(`http://127.0.0.1:${handle.port}/api/cards`, {
+          method: 'POST',
+          headers: { 'x-memhub-token': token },
+          body: JSON.stringify({ title: 'plain card', body: 'keyword only', type: 'fact' }),
+        });
+        const auto = await fetch(`http://127.0.0.1:${handle.port}/api/search`, {
+          method: 'POST',
+          headers: { 'x-memhub-token': token },
+          body: JSON.stringify({ query: 'plain' }),
+        });
+        const autoBody = (await auto.json()) as { mode_used: string; results: unknown[] };
+        expect(autoBody.mode_used).toBe('keyword');
+        expect(autoBody.results).toHaveLength(1);
+
+        // Explicit semantic mode explains how to install the stack.
+        const semantic = await fetch(`http://127.0.0.1:${handle.port}/api/search`, {
+          method: 'POST',
+          headers: { 'x-memhub-token': token },
+          body: JSON.stringify({ query: 'plain', mode: 'semantic' }),
+        });
+        expect(semantic.status).toBe(501);
+        const semanticBody = (await semantic.json()) as { error: { code: string } };
+        expect(semanticBody.error.code).toBe('semantic_not_installed');
+
+        // A missing package is permanent: no retries after the first failure.
+        await new Promise(resolve => setTimeout(resolve, 350));
+        expect(missing.ensureLoadedCalls).toBe(1);
+
+        // The daemon logged the keyword-only degradation with the hint.
+        const logged = log.mock.calls.map(call => call.join(' ')).join('\n');
+        expect(logged).toContain('keyword-only');
+        expect(logged).toContain('npm install');
+      } finally {
+        log.mockRestore();
         await handle.close();
       }
     }

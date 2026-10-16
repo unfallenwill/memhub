@@ -35,6 +35,7 @@ import {
   getModelsDir,
   getTokenPath,
 } from '../paths.js';
+import { isModuleNotFound, SEMANTIC_INSTALL_HINT } from '../semantic-stack.js';
 import { SemanticSearch } from '../services/semantic-search.js';
 import type { CardVectorStore } from '../storage/vector-index.js';
 import { LanceVectorIndex } from '../storage/vector-index.js';
@@ -202,7 +203,9 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   // Worker startup can be slow (first run downloads the embedding model)
   // and can fail (offline). It must never take the HTTP server down, so
   // it runs in the background with retries; semantic search stays "not
-  // ready" (auto mode degrades to keyword) until it succeeds.
+  // ready" (auto mode degrades to keyword) until it succeeds. A missing
+  // optional package is permanent: the daemon stays up in keyword-only
+  // mode and does not retry.
   const startWorkerInBackground = async (): Promise<void> => {
     for (;;) {
       try {
@@ -212,6 +215,14 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
         }
         return;
       } catch (error) {
+        if (isModuleNotFound(error)) {
+          semantic.markNotInstalled();
+          console.error(
+            'memhub: the semantic stack is not installed; running in keyword-only mode.'
+          );
+          console.error(`memhub: ${SEMANTIC_INSTALL_HINT}`);
+          return;
+        }
         console.error('memhub: indexing worker failed to start:', errorMessage(error));
       }
       const aborted = await sleepOrAborted(retryDelayMs, () => closing);

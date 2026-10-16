@@ -648,6 +648,37 @@ describe('HTTP app', () => {
       expect(body.error.code).toBe('index_not_ready');
     });
 
+    it('returns 501 with the install hint when the semantic stack is not installed', async () => {
+      semantic.markNotInstalled();
+      const response = await semanticRequest(
+        '/api/search',
+        authed({ method: 'POST', body: JSON.stringify({ query: 'x', mode: 'semantic' }) })
+      );
+      expect(response.status).toBe(501);
+      const body = (await response.json()) as { error: { code: string; message: string } };
+      expect(body.error.code).toBe('semantic_not_installed');
+      expect(body.error.message).toContain('npm install');
+    });
+
+    it('auto mode still serves keyword results when the stack is not installed', async () => {
+      await request(
+        '/api/cards',
+        authed({
+          method: 'POST',
+          body: JSON.stringify({ title: 'needle card', body: 'semantics', type: 'fact' }),
+        })
+      );
+      semantic.markNotInstalled();
+      const response = await semanticRequest(
+        '/api/search',
+        authed({ method: 'POST', body: JSON.stringify({ query: 'needle' }) })
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { mode_used: string; results: { id: number }[] };
+      expect(body.mode_used).toBe('keyword');
+      expect(body.results.map(r => r.id)).toEqual([1]);
+    });
+
     it('healthz reports readiness from the injected semantic index', async () => {
       const notReady = (await (
         await appWithSemantic(semantic).request('/healthz', { headers: { host: 'localhost' } })

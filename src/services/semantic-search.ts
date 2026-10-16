@@ -32,6 +32,7 @@ export interface SemanticSearchDeps {
  */
 export class SemanticSearch {
   private readyFlag = false;
+  private notInstalledFlag = false;
 
   constructor(private readonly deps: SemanticSearchDeps) {}
 
@@ -40,9 +41,26 @@ export class SemanticSearch {
     return this.readyFlag;
   }
 
+  /**
+   * Whether the optional semantic stack packages are missing. Permanent
+   * for the process lifetime; set by the daemon when the worker fails to
+   * start with a module-not-found error.
+   */
+  get notInstalled(): boolean {
+    return this.notInstalledFlag;
+  }
+
   /** Mark the index ready (or not). Called by the daemon. */
   setReady(ready: boolean): void {
     this.readyFlag = ready;
+    if (ready) {
+      this.notInstalledFlag = false;
+    }
+  }
+
+  /** Mark the semantic stack as not installed (the daemon does this). */
+  markNotInstalled(): void {
+    this.notInstalledFlag = true;
   }
 
   /**

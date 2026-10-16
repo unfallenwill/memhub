@@ -80,6 +80,13 @@ export function deterministicVector(text: string, dim = 8): number[] {
   return vector.map(v => v / norm);
 }
 
+/** An error shaped like Node's dynamic-import failure for a missing package. */
+export function moduleNotFoundError(pkg: string): Error {
+  const error = new Error(`Cannot find package '${pkg}' imported from /memhub/dist/src/x.js`);
+  (error as NodeJS.ErrnoException).code = 'ERR_MODULE_NOT_FOUND';
+  return error;
+}
+
 /** Options for FakeEmbedder. */
 export interface FakeEmbedderOptions {
   readonly modelId?: string | undefined;
@@ -87,6 +94,8 @@ export interface FakeEmbedderOptions {
   readonly failFor?: ((text: string) => boolean) | undefined;
   /** When true, ensureLoaded() always rejects. */
   readonly failLoad?: boolean | undefined;
+  /** Error thrown by ensureLoaded() when failLoad is set. */
+  readonly failLoadWith?: unknown;
 }
 
 /** In-memory EmbeddingProvider for tests (never downloads a model). */
@@ -104,7 +113,7 @@ export class FakeEmbedder implements EmbeddingProvider {
   async ensureLoaded(): Promise<void> {
     this.ensureLoadedCalls++;
     if (this.options.failLoad) {
-      throw new Error('model load failed');
+      throw this.options.failLoadWith ?? new Error('model load failed');
     }
   }
 

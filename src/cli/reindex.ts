@@ -12,6 +12,7 @@ import { openDatabase } from '../db/database.js';
 import type { EmbeddingProvider } from '../embedding/embedder.js';
 import { TransformersEmbedder } from '../embedding/transformers-embedder.js';
 import { getDatabasePath, getLanceDbPath, getMemhubHome, getModelsDir } from '../paths.js';
+import { isModuleNotFound, SEMANTIC_INSTALL_HINT } from '../semantic-stack.js';
 import type { CardVectorStore } from '../storage/vector-index.js';
 import { LanceVectorIndex } from '../storage/vector-index.js';
 import { rebuildVectorIndex } from '../worker/rebuild.js';
@@ -41,6 +42,9 @@ export async function runReindexCommand(options: ReindexCommandOptions = {}): Pr
 
   console.log(`Rebuilding the vector index (model: ${embedder.modelId})...`);
   try {
+    // Load the model up front so a missing semantic stack fails here with
+    // the install hint instead of silently failing every batch below.
+    await embedder.ensureLoaded();
     const result = await rebuildVectorIndex({
       db,
       embedder,
@@ -59,6 +63,11 @@ export async function runReindexCommand(options: ReindexCommandOptions = {}): Pr
     console.log(`Reindexed ${result.indexed} cards into the vector index.`);
     return 0;
   } catch (error) {
+    if (isModuleNotFound(error)) {
+      console.error('Reindex failed: the semantic stack is not installed.');
+      console.error(SEMANTIC_INSTALL_HINT);
+      return 1;
+    }
     console.error(`Reindex failed: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   } finally {

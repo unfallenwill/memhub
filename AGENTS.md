@@ -54,6 +54,7 @@ docs/            # Documentation
 
 - **Write path is constant-fast**: one SQLite transaction (cards + events + activity_log) → `202`. Never add synchronous embedding/rule work to `POST /api/cards`.
 - **SQLite is the single source of truth**; the FTS index is maintained by triggers, vectors (M2) are delete+insert by card_id and fully rebuildable.
+- **The semantic stack is optional**: `@huggingface/transformers` and `@lancedb/lancedb` are optional peer dependencies (devDependencies in the repo), imported only via lazy dynamic `import()`. Without them the daemon runs keyword-only (`auto` falls back silently, explicit `semantic` answers `501 semantic_not_installed`); a module-not-found worker failure is permanent and must not be retried. The Docker image always includes the stack (promoted to regular deps in the Dockerfile deps stage).
 - **`cards.indexed_at` is the only truth for index completion**; `events` only trigger timing.
 - **Soft semantics only**: DELETE = archive, invalidate = supersede. No hard deletes of cards, no purge of `activity_log`.
 - **Mechanism over policy**: no similarity dedupe / reinforce / decay rule engines in v1. Exact-duplicate (title+body) writes reuse the existing card.
