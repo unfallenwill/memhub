@@ -1,0 +1,58 @@
+{
+  "name": "memhub",
+  "version": "1.0.0",
+  "description": "Local-first memory card daemon for AI coding agents",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "bin": {
+    "memhub": "dist/src/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:web": "pnpm --filter memhub-web run build",
+    "dev": "tsc --watch",
+    "dev:web": "pnpm --filter memhub-web run dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage --pool forks --poolOptions.forks.singleFork",
+    "lint": "eslint src test --ext .ts",
+    "lint:fix": "eslint src test --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"docs/**/*.md\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"docs/**/*.md\"",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "quality": "pnpm run lint && pnpm run typecheck && pnpm run format:check && pnpm run test:coverage && pnpm run build",
+    "prepack": "pnpm run build",
+    "ci": "pnpm run quality"
+  },
+  "keywords": [
+    "memory",
+    "ai-agents",
+    "sqlite",
+    "local-first"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@huggingface/transformers": "^4.3.1",
+    "@lancedb/lancedb": "^0.26.2",
+    "hono": "^4.6.14",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "@vitest/coverage-v8": "^1.6.1",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.2",
+    "eslint-plugin-import": "^2.32.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3",
+    "vitest": "^1.6.1"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

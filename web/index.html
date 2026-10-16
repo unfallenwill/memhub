@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MemHub</title>
+    <script>
+      // The daemon replaces this placeholder with the real API token when
+      // serving this file (src/http/static.ts). In `pnpm dev` mode the
+      // placeholder survives; the app then falls back to the token stored
+      // in localStorage under "memhub.token".
+      window.__MEMHUB_TOKEN__ = "__MEMHUB_TOKEN__";
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
