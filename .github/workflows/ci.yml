@@ -8,12 +8,13 @@ on:
 
 jobs:
   quality:
-    name: Quality Gate
-    runs-on: ubuntu-latest
-
+    name: Quality Gate (${{ matrix.os }}, Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [20.x, 22.x]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: [24.x]
 
     steps:
       - name: Checkout repository
@@ -27,7 +28,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
 
       - name: Get pnpm store directory
         shell: bash
@@ -50,13 +51,15 @@ jobs:
         run: pnpm run quality
 
       - name: Check build output
+        if: matrix.os == 'ubuntu-latest'
         run: |
           test -f dist/src/index.js
-          test -f dist/src/server/mcp-server.js
+          test -f dist/src/cli/index.js
 
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v3
-        if: matrix.node-version == '20.x'
+        uses: codecov/codecov-action@v4
+        if: matrix.os == 'ubuntu-latest'
         with:
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

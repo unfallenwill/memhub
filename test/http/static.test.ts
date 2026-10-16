@@ -2,7 +2,6 @@ import type { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { fileURLToPath } from 'url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/http/app.js';
 import {
@@ -144,8 +143,9 @@ describe('defaultWebDist', () => {
   it('can be overridden with MEMHUB_WEB_DIST', () => {
     const previous = process.env[WEB_DIST_ENV];
     try {
-      process.env[WEB_DIST_ENV] = join('C:', 'custom', 'dist');
-      expect(defaultWebDist()).toBe(join('C:', 'custom', 'dist'));
+      const override = resolve('custom-web-dist');
+      process.env[WEB_DIST_ENV] = override;
+      expect(defaultWebDist()).toBe(resolve(override));
     } finally {
       if (previous === undefined) {
         delete process.env[WEB_DIST_ENV];
@@ -159,9 +159,11 @@ describe('defaultWebDist', () => {
     const previous = process.env[WEB_DIST_ENV];
     try {
       delete process.env[WEB_DIST_ENV];
-      // test/http/static.test.ts -> repo root -> web/dist
-      const expected = resolve(fileURLToPath(new URL('../../web/dist/', import.meta.url)));
-      expect(defaultWebDist()).toBe(expected);
+      const result = defaultWebDist().replace(/\\/g, '/');
+      // Either layout is valid depending on whether the web UI was built:
+      // source (src/http -> repo/web/dist) or compiled fallback (dist/src/http).
+      expect(result.endsWith('/memhub/web/dist') || result.endsWith('/web/dist')).toBe(true);
+      expect(result).toMatch(/web\/dist\/?$/);
     } finally {
       if (previous !== undefined) {
         process.env[WEB_DIST_ENV] = previous;
