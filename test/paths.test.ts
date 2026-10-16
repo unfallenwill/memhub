@@ -2,12 +2,18 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  ALLOWED_HOSTS_ENV,
+  BIND_HOST_ENV,
   DEFAULT_PORT,
+  getAllowedHosts,
+  getBindHost,
   getDatabasePath,
+  getDefaultPort,
   getLogsDir,
   getMemhubHome,
   getTokenPath,
   MEMHUB_HOME_ENV,
+  PORT_ENV,
 } from '../src/paths.js';
 
 describe('paths', () => {
@@ -46,5 +52,63 @@ describe('paths', () => {
 
   it('exposes the default port', () => {
     expect(DEFAULT_PORT).toBe(7800);
+  });
+});
+
+describe('deployment env overrides', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe('getBindHost', () => {
+    it('defaults to 127.0.0.1', () => {
+      vi.stubEnv(BIND_HOST_ENV, '');
+      expect(getBindHost()).toBe('127.0.0.1');
+    });
+
+    it('honors MEMHUB_HOST', () => {
+      vi.stubEnv(BIND_HOST_ENV, '0.0.0.0');
+      expect(getBindHost()).toBe('0.0.0.0');
+    });
+
+    it('trims whitespace', () => {
+      vi.stubEnv(BIND_HOST_ENV, '  10.0.0.5  ');
+      expect(getBindHost()).toBe('10.0.0.5');
+    });
+  });
+
+  describe('getDefaultPort', () => {
+    it('defaults to 7800', () => {
+      vi.stubEnv(PORT_ENV, '');
+      expect(getDefaultPort()).toBe(7800);
+    });
+
+    it('honors MEMHUB_PORT', () => {
+      vi.stubEnv(PORT_ENV, '9000');
+      expect(getDefaultPort()).toBe(9000);
+    });
+
+    it('throws on an invalid MEMHUB_PORT', () => {
+      vi.stubEnv(PORT_ENV, 'http');
+      expect(() => getDefaultPort()).toThrow(/MEMHUB_PORT/);
+    });
+  });
+
+  describe('getAllowedHosts', () => {
+    it('returns an empty list when unset or blank', () => {
+      expect(getAllowedHosts()).toEqual([]);
+      vi.stubEnv(ALLOWED_HOSTS_ENV, '  ');
+      expect(getAllowedHosts()).toEqual([]);
+    });
+
+    it('parses comma-separated hostnames, trimmed and lowercased', () => {
+      vi.stubEnv(ALLOWED_HOSTS_ENV, 'MemHub.Example.com, localhost ,*');
+      expect(getAllowedHosts()).toEqual(['memhub.example.com', 'localhost', '*']);
+    });
+
+    it('drops empty entries', () => {
+      vi.stubEnv(ALLOWED_HOSTS_ENV, 'a.com,,b.com,');
+      expect(getAllowedHosts()).toEqual(['a.com', 'b.com']);
+    });
   });
 });

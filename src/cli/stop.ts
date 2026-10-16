@@ -9,7 +9,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { postShutdown, probeHealthz } from './client.js';
-import { readToken } from '../daemon/token.js';
+import { resolveExistingToken } from '../daemon/token.js';
 import { getMemhubHome, getTokenPath } from '../paths.js';
 
 /** How long to wait for a graceful shutdown before force-killing. */
@@ -57,7 +57,7 @@ export async function runStopCommand(options: StopCommandOptions): Promise<numbe
   }
   const pid = probe.info.pid;
 
-  const token = readToken(getTokenPath(options.home ?? getMemhubHome()));
+  const token = resolveExistingToken(getTokenPath(options.home ?? getMemhubHome()));
   if (token === null) {
     // eslint-disable-next-line no-console
     console.error('Cannot read the MemHub token file; cannot request a graceful shutdown');

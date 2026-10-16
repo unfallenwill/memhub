@@ -80,6 +80,27 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX idx_activity_card ON activity_log(card_id)`,
     ],
   },
+  {
+    version: 2,
+    name: 'auth',
+    statements: [
+      // Single-row table; empty = auth not initialized (first login
+      // bootstraps the admin password via the device flow).
+      `CREATE TABLE admin_auth(
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        password_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE TABLE device_tokens(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_hash TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        revoked_at TEXT
+      )`,
+    ],
+  },
 ];
 
 /** Read the current schema version (PRAGMA user_version). */

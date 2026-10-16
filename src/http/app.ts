@@ -16,12 +16,14 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { z } from 'zod';
 import { ActivityLog } from '../db/activity.js';
 import { CardStore, InvalidSupersedeTargetError } from '../db/cards.js';
+import { DeviceTokenStore, tokenHash } from '../db/device-tokens.js';
 import { EventStore } from '../db/events.js';
 import { KeywordSearch } from '../db/search.js';
 import { CARD_STATUSES, CARD_TYPES, SEARCH_MODES, type CardRecord } from '../db/types.js';
 import { WorkerStateStore } from '../db/worker-state.js';
 import { IndexNotReadyError, SearchService } from '../services/search-service.js';
 import type { SemanticSearch } from '../services/semantic-search.js';
+import { registerDeviceAuthRoutes } from './device-auth.js';
 import {
   ApiError,
   indexNotReady,
@@ -50,12 +52,28 @@ export interface AppDeps {
    */
   readonly semantic?: SemanticSearch | undefined;
   /**
+   * Additional Host header values accepted besides the local defaults
+   * (localhost, 127.0.0.1, [::1]). Used by cloud deployments behind a
+   * proxy; entries match case-insensitively with any :port ignored.
+   * A single "*" accepts every Host header.
+   */
+  readonly allowedHosts?: readonly string[] | undefined;
+  /**
    * Directory of the built web UI (web/dist). When set, the SPA is served
    * at GET / with the API token injected into index.html; static assets
    * are token-exempt like the page itself. Null/undefined disables the
    * web UI (JSON 404s).
    */
   readonly webDist?: string | undefined;
+  /**
+   * Whether the served index.html may embed the daemon token. Only true
+   * for loopback-bound daemons: on a remote host the page HTML must not
+   * carry an all-powerful token (anyone who can open the page would get
+   * one) — remote web sessions use `memhub login` device tokens instead.
+   */
+  readonly injectWebToken?: boolean | undefined;
+  /** Clock override for the device-flow endpoints (tests). */
+  readonly authNow?: (() => number) | undefined;
 }
 
 const createCardSchema = z.object({
@@ -107,20 +125,35 @@ export function createApp(deps: AppDeps): Hono {
 
   const app = new Hono();
 
-  // DNS rebinding defense: only local Host headers are accepted.
+  // DNS rebinding defense: only local Host headers are accepted, plus
+  // any explicitly allowed hosts (cloud deployments).
+  const allowedHosts = deps.allowedHosts ?? [];
   app.use('*', async (c, next) => {
     const host = c.req.header('host');
-    if (!host || !isAllowedHost(host)) {
+    if (!host || !isAllowedHost(host, allowedHosts)) {
       throw invalidHost();
     }
     await next();
   });
 
-  // Token auth for everything under /api/*.
+  // Token auth for everything under /api/*: the daemon's own token
+  // (file/env) or any active device-flow token.
+  const deviceTokens = new DeviceTokenStore(deps.db);
+  const TOUCH_INTERVAL_MS = 60_000;
   app.use('/api/*', async (c, next) => {
     const provided = c.req.header('x-memhub-token');
-    if (provided === undefined || !tokensEqual(provided, deps.token)) {
-      throw unauthorized();
+    if (provided === undefined) throw unauthorized();
+    if (!tokensEqual(provided, deps.token)) {
+      const record = deviceTokens.findActiveByHash(tokenHash(provided));
+      if (record === null) throw unauthorized();
+      // Throttled last-used update: one indexed read per request, a
+      // write at most once a minute per token (write path stays fast).
+      if (
+        record.lastUsedAt === null ||
+        Date.now() - Date.parse(record.lastUsedAt) > TOUCH_INTERVAL_MS
+      ) {
+        deviceTokens.touchLastUsed(record.id);
+      }
     }
     await next();
   });
@@ -292,13 +325,25 @@ export function createApp(deps: AppDeps): Hono {
     });
   });
 
+  // Device-flow login (registered before the SPA wildcard so /login and
+  // /oauth/* keep priority). These routes are token-exempt by design:
+  // /oauth/device/code is the public entry point of RFC 8628, and /login
+  // authenticates with the admin password, not a token.
+  registerDeviceAuthRoutes(app, {
+    db: deps.db,
+    legacyToken: deps.token,
+    webDist: deps.webDist,
+    now: deps.authNow,
+  });
+
   // Web UI static hosting (registered last so /api routes keep priority).
-  // Static pages are token-exempt; the page itself carries the injected
-  // token for its /api calls. The Host check above still applies.
+  // Static pages are token-exempt; when injectWebToken is set the page
+  // itself carries the injected token for its /api calls (local daemons
+  // only — remote deployments rely on device tokens from memhub login).
   if (deps.webDist !== undefined) {
     const site = new StaticSite(deps.webDist);
     app.get('/', () => {
-      const index = site.index(deps.token);
+      const index = site.index(deps.injectWebToken === false ? '' : deps.token);
       if (index === null) throw webUiNotBuilt();
       return staticResponse(index);
     });
@@ -329,21 +374,27 @@ function isIndexReady(
   return model !== null && pendingIndex === 0;
 }
 
-/** Allowed Host header hostnames (ports are ignored). */
-function isAllowedHost(host: string): boolean {
+/**
+ * Whether a Host header value is allowed: the local defaults plus any
+ * configured extra hosts (case-insensitive, ports ignored). A "*" entry
+ * in the extras accepts everything.
+ */
+function isAllowedHost(host: string, extra: readonly string[]): boolean {
+  if (extra.includes('*')) return true;
   let hostname = host.trim().toLowerCase();
   if (hostname.startsWith('[')) {
     // IPv6 literal like [::1]:7800
     const end = hostname.indexOf(']');
     if (end === -1) return false;
     hostname = hostname.slice(0, end + 1);
-    return hostname === '[::1]';
+    return hostname === '[::1]' || extra.some(entry => entry.toLowerCase() === hostname);
   }
   const colon = hostname.lastIndexOf(':');
   if (colon !== -1) {
     hostname = hostname.slice(0, colon);
   }
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+  return extra.some(entry => entry.toLowerCase() === hostname);
 }
 
 /** Constant-time token comparison. */

@@ -10,7 +10,7 @@ import {
   waitForServer,
 } from '../../src/cli/server.js';
 import { PortInUseError, startDaemon } from '../../src/daemon/start.js';
-import { MEMHUB_HOME_ENV } from '../../src/paths.js';
+import { MEMHUB_HOME_ENV, PORT_ENV } from '../../src/paths.js';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -54,8 +54,27 @@ function fakeChild(): ReturnType<typeof spawn> {
 }
 
 describe('parseServerArgs', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('defaults to background on port 7800', () => {
     expect(parseServerArgs([])).toEqual({ port: 7800, foreground: false });
+  });
+
+  it('defaults the port to MEMHUB_PORT', () => {
+    vi.stubEnv(PORT_ENV, '9000');
+    expect(parseServerArgs([])).toEqual({ port: 9000, foreground: false });
+  });
+
+  it('--port overrides MEMHUB_PORT', () => {
+    vi.stubEnv(PORT_ENV, '9000');
+    expect(parseServerArgs(['--port', '9001'])).toEqual({ port: 9001, foreground: false });
+  });
+
+  it('rejects an invalid MEMHUB_PORT', () => {
+    vi.stubEnv(PORT_ENV, 'not-a-port');
+    expect(() => parseServerArgs([])).toThrow(/MEMHUB_PORT/);
   });
 
   it('parses --port and --foreground in both long and short forms', () => {

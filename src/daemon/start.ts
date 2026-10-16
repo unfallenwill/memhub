@@ -2,7 +2,8 @@
  * Daemon bootstrap.
  *
  * Opens the database, creates/loads the token, builds the Hono app and
- * serves it on 127.0.0.1 only. Alongside the HTTP server it starts:
+ * serves it on the loopback interface by default (MEMHUB_HOST overrides,
+ * e.g. 0.0.0.0 in containers). Alongside the HTTP server it starts:
  *
  * - the indexing worker (embedding model + LanceDB vector index), which
  *   also powers semantic search once it is ready, and
@@ -26,6 +27,8 @@ import { createApp } from '../http/app.js';
 import { defaultWebDist } from '../http/static.js';
 import {
   DEFAULT_PORT,
+  getAllowedHosts,
+  getBindHost,
   getDatabasePath,
   getLanceDbPath,
   getMemhubHome,
@@ -38,7 +41,7 @@ import { LanceVectorIndex } from '../storage/vector-index.js';
 import { getVersion } from '../version.js';
 import { IndexingWorker } from '../worker/indexer-worker.js';
 import { JobTimers } from '../worker/timers.js';
-import { loadOrCreateToken } from './token.js';
+import { resolveToken } from './token.js';
 
 /** Error thrown when the port is already in use. */
 export class PortInUseError extends Error {
@@ -50,6 +53,8 @@ export class PortInUseError extends Error {
 
 /** A running MemHub daemon. */
 export interface DaemonHandle {
+  /** The address the server bound (useful for logging). */
+  readonly host: string;
   /** The actual bound port (useful when port 0 was requested). */
   readonly port: number;
   readonly pid: number;
@@ -74,8 +79,13 @@ export interface DaemonWorkerOptions {
 export interface DaemonOptions {
   /** Data directory. Defaults to the resolved MemHub home. */
   readonly home?: string | undefined;
-  /** Port to bind on 127.0.0.1. 0 picks a free port. Defaults to 7800. */
+  /** Port to bind. 0 picks a free port. Defaults to 7800. */
   readonly port?: number | undefined;
+  /**
+   * TCP address to bind. Defaults to the MEMHUB_HOST environment
+   * variable, falling back to 127.0.0.1 (loopback only).
+   */
+  readonly host?: string | undefined;
   /**
    * Directory of the built web UI to serve at GET /. Defaults to the
    * web/dist next to the package root (MEMHUB_WEB_DIST overrides).
@@ -107,9 +117,10 @@ export function createDefaultWorkerContext(home: string): DaemonWorkerOptions {
 export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHandle> {
   const home = options.home ?? getMemhubHome();
   const port = options.port ?? DEFAULT_PORT;
+  const host = options.host ?? getBindHost();
   mkdirSync(home, { recursive: true });
 
-  const token = loadOrCreateToken(getTokenPath(home));
+  const token = resolveToken(getTokenPath(home));
   const db = openDatabase(getDatabasePath(home));
   const workerOptions = options.worker ?? createDefaultWorkerContext(home);
   const retryDelayMs = workerOptions.retryDelayMs ?? WORKER_START_RETRY_MS;
@@ -144,6 +155,8 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     version: getVersion(),
     pid: process.pid,
     startedAt: Date.now(),
+    allowedHosts: getAllowedHosts(),
+    injectWebToken: isLoopbackHost(host),
     requestShutdown: () => {
       if (closing) return;
       closing = true;
@@ -160,7 +173,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   // Transformers.js, which silently disables its model file cache and makes
   // the first model download fail ("Unable to get model file path or buffer").
   const server: ServerType = serve(
-    { fetch: app.fetch, hostname: '127.0.0.1', port, overrideGlobalObjects: false },
+    { fetch: app.fetch, hostname: host, port, overrideGlobalObjects: false },
     info => settlePort(info.port)
   );
   server.once('error', (error: NodeJS.ErrnoException) => {
@@ -237,6 +250,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   };
 
   return {
+    host,
     port: actualPort,
     pid: process.pid,
     closed,
@@ -253,6 +267,11 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
 
 /** Milliseconds to wait before closing sockets after a shutdown request. */
 export const SHUTDOWN_FLUSH_DELAY_MS = 100;
+
+/** Whether a bind address is loopback (local-only daemon). */
+export function isLoopbackHost(host: string): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+}
 
 /** Build a CardStore over an open database (used by the semantic search join). */
 function createCardStore(db: DatabaseSync): CardStore {

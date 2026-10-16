@@ -436,3 +436,54 @@ button:hover:not(:disabled) {
   color: var(--muted);
   font-style: italic;
 }
+
+/* Devices */
+
+.device-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.device-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.device-item.revoked {
+  opacity: 0.55;
+}
+
+.device-label {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-current {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft, #dbeafe);
+  color: var(--accent, #1d4ed8);
+}
+
+.device-meta {
+  color: var(--muted);
+  font-size: 13px;
+  margin-left: auto;
+}
+
+.device-revoke {
+  font-size: 13px;
+  padding: 4px 12px;
+}

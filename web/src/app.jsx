@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import ActivityView from './views/activity.jsx';
 import CardDetail from './views/card-detail.jsx';
 import CardsView from './views/cards.jsx';
+import DevicesView from './views/devices.jsx';
 
 function parseHash() {
   const hash = window.location.hash.replace(/^#/, '') || '/';
@@ -11,6 +12,9 @@ function parseHash() {
   }
   if (hash === '/activity') {
     return { view: 'activity' };
+  }
+  if (hash === '/devices') {
+    return { view: 'devices' };
   }
   return { view: 'cards' };
 }
@@ -38,12 +42,16 @@ export default function App() {
           <a href="#/activity" class={route.view === 'activity' ? 'active' : ''}>
             Activity
           </a>
+          <a href="#/devices" class={route.view === 'devices' ? 'active' : ''}>
+            Devices
+          </a>
         </nav>
       </header>
       <main class="main">
         {route.view === 'cards' ? <CardsView /> : null}
         {route.view === 'card' ? <CardDetail id={route.id} /> : null}
         {route.view === 'activity' ? <ActivityView /> : null}
+        {route.view === 'devices' ? <DevicesView /> : null}
       </main>
     </div>
   );

@@ -77,6 +77,9 @@ hook (curl) ──► HTTP API ──► SQLite（cards、events、activity log�
 | `memhub reindex` | 从 SQLite 全量重建向量索引 |
 | `memhub add [选项]` | 写卡（面向 agent；支持 stdin 传 body） |
 | `memhub search <query> [选项]` | 检索卡片，输出单行 JSON |
+| `memhub login <url>` | 登录远程守护进程（设备流） |
+| `memhub logout` | 撤销已保存的登录 token |
+| `memhub reset-password` | 清除管理密码（在服务器上执行） |
 
 | API | 说明 |
 | --- | --- |
@@ -94,6 +97,23 @@ hook (curl) ──► HTTP API ──► SQLite（cards、events、activity log�
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MEMHUB_HOME` | `~/.memhub` | 数据目录（数据库、token、日志、模型） |
+| `MEMHUB_HOST` | `127.0.0.1` | 监听地址（容器中用 `0.0.0.0`） |
+| `MEMHUB_PORT` | `7800` | 守护进程与 CLI 的默认端口 |
+| `MEMHUB_TOKEN` | （token 文件） | 固定 API token；优先于 `<home>/token` |
+| `MEMHUB_ALLOWED_HOSTS` | （仅本机） | 额外允许的 `Host` 头，逗号分隔 |
+
+守护进程默认保持本地优先：仅监听回环地址、仅接受本机 Host 头、token 自动生成。后三个变量用于云端/容器部署的显式开启，详见 [docs/user-guide.md](docs/user-guide.md)。
+
+## Docker
+
+```bash
+docker build -t memhub .
+docker run -d -p 7800:7800 -v memhub-data:/data \
+  -e MEMHUB_ALLOWED_HOSTS=memhub.example.com \
+  memhub
+```
+
+数据持久化在 `/data`（SQLite、向量索引、模型缓存）。部署后在任意机器执行 `memhub login https://memhub.example.com` —— 首次登录会在浏览器里设置管理密码，并为每台设备签发可撤销的 token（Web UI 的 Devices 页面可管理）。详见 [docs/user-guide.md](docs/user-guide.md#docker)。
 
 ## 开发说明
 

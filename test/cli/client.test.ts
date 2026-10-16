@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { postShutdown, probeHealthz } from '../../src/cli/client.js';
+import {
+  connectHost,
+  postShutdown,
+  probeHealthz,
+  probeHealthzUrl,
+  remoteApiFetch,
+} from '../../src/cli/client.js';
+import { BIND_HOST_ENV } from '../../src/paths.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -21,6 +28,30 @@ const healthBody = {
 describe('client', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  describe('connectHost', () => {
+    it('defaults to 127.0.0.1', () => {
+      expect(connectHost()).toBe('127.0.0.1');
+    });
+
+    it('maps wildcard binds to 127.0.0.1', () => {
+      for (const bind of ['0.0.0.0', '::', '[::]']) {
+        vi.stubEnv(BIND_HOST_ENV, bind);
+        expect(connectHost(), bind).toBe('127.0.0.1');
+      }
+    });
+
+    it('connects to a concrete MEMHUB_HOST', () => {
+      vi.stubEnv(BIND_HOST_ENV, '10.0.0.5');
+      expect(connectHost()).toBe('10.0.0.5');
+    });
+
+    it('ignores a blank MEMHUB_HOST', () => {
+      vi.stubEnv(BIND_HOST_ENV, '   ');
+      expect(connectHost()).toBe('127.0.0.1');
+    });
   });
 
   describe('probeHealthz', () => {
@@ -113,6 +144,60 @@ describe('client', () => {
         })
       );
       expect(await postShutdown(7800, 'secret')).toBe(false);
+    });
+  });
+
+  describe('remoteApiFetch', () => {
+    it('performs an authenticated request and parses the JSON body', async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ ok: true }, 200));
+      vi.stubGlobal('fetch', fetchMock);
+      const result = await remoteApiFetch('https://x.example/', 'tok', 'DELETE', '/api/auth/token');
+      expect(result).toEqual({ kind: 'ok', status: 200, body: { ok: true } });
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://x.example/api/auth/token');
+      expect(init.method).toBe('DELETE');
+      expect((init.headers as Record<string, string>)['x-memhub-token']).toBe('tok');
+    });
+
+    it('reports network failures as unreachable', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          throw new Error('ECONNREFUSED');
+        })
+      );
+      expect(await remoteApiFetch('https://x.example', 'tok', 'GET', '/api/queue')).toEqual({
+        kind: 'unreachable',
+      });
+    });
+
+    it('keeps non-JSON bodies as text', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('nope', { status: 500 }))
+      );
+      const result = await remoteApiFetch('https://x.example', 'tok', 'GET', '/x');
+      expect(result).toEqual({ kind: 'ok', status: 500, body: 'nope' });
+    });
+  });
+
+  describe('probeHealthzUrl', () => {
+    it('identifies a remote memhub daemon', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => jsonResponse(healthBody))
+      );
+      const probe = await probeHealthzUrl('https://x.example');
+      expect(probe).toEqual({ kind: 'memhub', info: healthBody });
+    });
+
+    it('accepts an injected fetch implementation', async () => {
+      const fetchImpl = vi.fn(async () => {
+        throw new Error('offline');
+      });
+      expect(await probeHealthzUrl('https://x.example', 5000, fetchImpl)).toEqual({
+        kind: 'unreachable',
+      });
     });
   });
 });

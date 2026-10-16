@@ -10,7 +10,7 @@
 import { mkdirSync, openSync } from 'fs';
 import { spawn } from 'node:child_process';
 import { startDaemon, PortInUseError } from '../daemon/start.js';
-import { getLogsDir, getMemhubHome } from '../paths.js';
+import { getBindHost, getDefaultPort, getLogsDir, getMemhubHome } from '../paths.js';
 import { probeHealthz, type HealthProbe } from './client.js';
 
 /** Options for the server command. */
@@ -23,7 +23,7 @@ export interface ServerCommandOptions {
 
 /** Parse `memhub server` arguments. Throws on invalid input. */
 export function parseServerArgs(argv: readonly string[]): ServerCommandOptions {
-  let port = 7800;
+  let port = getDefaultPort();
   let foreground = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -66,7 +66,9 @@ async function runForeground(port: number): Promise<number> {
   }
   const running = handle;
   // eslint-disable-next-line no-console
-  console.log(`MemHub server listening on http://127.0.0.1:${running.port} (pid ${running.pid})`);
+  console.log(
+    `MemHub server listening on http://${running.host}:${running.port} (pid ${running.pid})`
+  );
 
   const shutdown = (): void => {
     void running.close();
@@ -122,7 +124,7 @@ async function runBackground(port: number, startupTimeoutMs: number): Promise<nu
   const probe = await waitForServer(port, startupTimeoutMs);
   if (probe.kind === 'memhub') {
     // eslint-disable-next-line no-console
-    console.log(`MemHub server started (pid ${probe.info.pid}) on http://127.0.0.1:${port}`);
+    console.log(`MemHub server started (pid ${probe.info.pid}) on http://${getBindHost()}:${port}`);
     return 0;
   }
   if (probe.kind === 'other') {

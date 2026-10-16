@@ -57,6 +57,27 @@ describe('HTTP app', () => {
     return app().request(path, { ...init, headers });
   }
 
+  /** Like request(), but with extra allowed hosts injected (cloud setup). */
+  function requestWithHosts(
+    path: string,
+    allowedHosts: readonly string[],
+    init: RequestInit = {}
+  ): Promise<Response> {
+    const headers = {
+      host: '127.0.0.1:7800',
+      ...((init.headers as Record<string, string>) ?? {}),
+    };
+    return createApp({
+      db,
+      token: TOKEN,
+      version: '1.2.3-test',
+      pid: 4242,
+      startedAt: Date.now(),
+      requestShutdown,
+      allowedHosts,
+    }).request(path, { ...init, headers });
+  }
+
   beforeEach(() => {
     t = createTestDb();
     db = t.db;
@@ -118,6 +139,48 @@ describe('HTTP app', () => {
         headers: { host: 'localhost.evil.example' },
       });
       expect(response.status).toBe(403);
+    });
+
+    it('accepts a configured extra host with any port', async () => {
+      const response = await requestWithHosts('/healthz', ['memhub.example.com'], {
+        headers: { host: 'memhub.example.com:8443' },
+      });
+      expect(response.status).toBe(200);
+    });
+
+    it('matches extra hosts case-insensitively', async () => {
+      const response = await requestWithHosts('/healthz', ['memhub.example.com'], {
+        headers: { host: 'MEMHUB.Example.com' },
+      });
+      expect(response.status).toBe(200);
+    });
+
+    it('keeps the local defaults when extra hosts are configured', async () => {
+      const response = await requestWithHosts('/healthz', ['memhub.example.com'], {
+        headers: { host: 'localhost:7800' },
+      });
+      expect(response.status).toBe(200);
+    });
+
+    it('still rejects unconfigured hosts when extras are set', async () => {
+      const response = await requestWithHosts('/healthz', ['memhub.example.com'], {
+        headers: { host: 'evil.example' },
+      });
+      expect(response.status).toBe(403);
+    });
+
+    it('accepts every host when "*" is configured', async () => {
+      const response = await requestWithHosts('/healthz', ['*'], {
+        headers: { host: 'anything.example:1234' },
+      });
+      expect(response.status).toBe(200);
+    });
+
+    it('accepts a configured IPv6 literal host', async () => {
+      const response = await requestWithHosts('/healthz', ['[2001:db8::1]'], {
+        headers: { host: '[2001:db8::1]:8443' },
+      });
+      expect(response.status).toBe(200);
     });
   });
 

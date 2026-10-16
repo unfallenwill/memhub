@@ -57,7 +57,7 @@ docs/            # Documentation
 - **`cards.indexed_at` is the only truth for index completion**; `events` only trigger timing.
 - **Soft semantics only**: DELETE = archive, invalidate = supersede. No hard deletes of cards, no purge of `activity_log`.
 - **Mechanism over policy**: no similarity dedupe / reinforce / decay rule engines in v1. Exact-duplicate (title+body) writes reuse the existing card.
-- **Security**: daemon binds 127.0.0.1 only; every request must have a localhost/127.0.0.1 Host header; everything except `/healthz` requires `X-Memhub-Token`; errors use `{error:{code,message}}`.
+- **Security**: daemon binds 127.0.0.1 only (opt-in `MEMHUB_HOST` for containers/cloud); every request must have a localhost/127.0.0.1 Host header (plus opt-in `MEMHUB_ALLOWED_HOSTS`); everything except `/healthz`, `/login` and `/oauth/*` requires `X-Memhub-Token` (fixed via `MEMHUB_TOKEN`, else generated token file, else a `memhub login` device token — verified as a sha256 lookup in `device_tokens`); the login page never renders with a daemon token injected on non-loopbound daemons (remote web sessions are device sessions); `/api/*` errors use `{error:{code,message}}`, `/oauth/*` uses the flat OAuth error shape.
 
 ---
 

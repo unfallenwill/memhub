@@ -86,6 +86,30 @@ describe('parseAddArgs', () => {
   it('rejects an invalid port', () => {
     expect(() => parseAddArgs(['--title', 'T', '--port', '0'])).toThrow('invalid --port');
   });
+
+  it('parses --url', () => {
+    expect(parseAddArgs(['--title', 'T', '--url', 'https://x.example'])).toEqual({
+      title: 'T',
+      body: null,
+      type: 'insight',
+      cues: [],
+      writer: undefined,
+      port: 7800,
+      url: 'https://x.example',
+    });
+  });
+
+  it('rejects --url together with --port', () => {
+    expect(() =>
+      parseAddArgs(['--title', 'T', '--url', 'https://x.example', '-p', '7900'])
+    ).toThrow('mutually exclusive');
+  });
+
+  it('rejects an invalid --url', () => {
+    expect(() => parseAddArgs(['--title', 'T', '--url', 'ftp://x.example'])).toThrow(
+      'invalid --url'
+    );
+  });
 });
 
 describe('runAddCommand', () => {
@@ -236,6 +260,53 @@ describe('runAddCommand', () => {
     });
     expect(code).toBe(1);
     expect(error.mock.calls.flat().join('\n')).toContain('memhub server');
+  });
+
+  it('writes to a remote daemon with the stored login token', async () => {
+    const { home } = makeHome();
+    writeFileSync(
+      join(home, 'credentials.json'),
+      JSON.stringify({ version: 1, url: 'https://x.example', token: 'remote-token' })
+    );
+    const calls: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        calls.push(String(init?.method ?? 'GET') + ' ' + String(input));
+        return jsonResponse({ id: 1, indexed: false, deduplicated: false }, 202);
+      })
+    );
+    const code = await runAddCommand({
+      title: 'T',
+      body: 'B',
+      type: 'insight',
+      cues: [],
+      writer: undefined,
+      port: 7800,
+      url: 'https://x.example',
+      home,
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual(['POST https://x.example/api/cards']);
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('exits 1 with a login hint when not logged in to the remote', async () => {
+    const { home } = makeHome();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const code = await runAddCommand({
+      title: 'T',
+      body: 'B',
+      type: 'insight',
+      cues: [],
+      writer: undefined,
+      port: 7800,
+      url: 'https://x.example',
+      home,
+    });
+    expect(code).toBe(1);
+    expect(error.mock.calls.flat().join('\n')).toContain('memhub login https://x.example');
   });
 
   it('prints the error body and a token hint on 401', async () => {

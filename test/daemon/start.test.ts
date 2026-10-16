@@ -143,6 +143,19 @@ describe('startDaemon', () => {
     }
   );
 
+  it('serves the device flow start endpoint on the real daemon', async () => {
+    const response = await fetch(url('/oauth/device/code'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_id: 'memhub-cli' }),
+    });
+    expect(response.status).toBe(200);
+    const grant = (await response.json()) as { requires_setup: boolean; user_code: string };
+    // Fresh test home: no admin password has been set.
+    expect(grant.requires_setup).toBe(true);
+    expect(grant.user_code).toMatch(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
+  });
+
   it('shuts down gracefully via POST /api/shutdown', { timeout: 15_000 }, async () => {
     const response = await fetch(url('/api/shutdown'), {
       method: 'POST',

@@ -77,6 +77,9 @@ hook (curl) ──► HTTP API ──► SQLite (cards, events, activity log)   
 | `memhub reindex` | Rebuild the vector index from SQLite |
 | `memhub add [options]` | Write a card (agent-facing; stdin body supported) |
 | `memhub search <query> [options]` | Search cards, print one-line JSON |
+| `memhub login <url>` | Log in to a remote daemon (device flow) |
+| `memhub logout` | Revoke the stored login token |
+| `memhub reset-password` | Clear the admin password (on the server) |
 
 | API | Description |
 | --- | --- |
@@ -94,6 +97,23 @@ Card types: `fact | preference | decision | insight | pattern`. Full reference: 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `MEMHUB_HOME` | `~/.memhub` | Data directory (db, token, logs, models) |
+| `MEMHUB_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` in containers) |
+| `MEMHUB_PORT` | `7800` | Default port for daemon and CLI |
+| `MEMHUB_TOKEN` | (token file) | Fixed API token; wins over `<home>/token` |
+| `MEMHUB_ALLOWED_HOSTS` | (local only) | Extra allowed `Host` header values, comma-separated |
+
+The daemon is local-first by default: loopback bind, local-only Host headers, generated token. The last three variables opt into cloud/container deployments — see [docs/user-guide.md](docs/user-guide.md).
+
+## Docker
+
+```bash
+docker build -t memhub .
+docker run -d -p 7800:7800 -v memhub-data:/data \
+  -e MEMHUB_ALLOWED_HOSTS=memhub.example.com \
+  memhub
+```
+
+Data persists under `/data` (SQLite, vector index, model cache). After deploying, `memhub login https://memhub.example.com` from any machine — the first login sets the admin password in the browser and issues per-device tokens (revocable from the web UI's Devices page). Details: [docs/user-guide.md](docs/user-guide.md#docker).
 
 ## Development
 

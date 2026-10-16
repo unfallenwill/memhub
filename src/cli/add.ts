@@ -8,10 +8,11 @@
  */
 
 import { CARD_TYPES, type CardType } from '../db/types.js';
-import { readToken } from '../daemon/token.js';
+import { resolveExistingToken } from '../daemon/token.js';
 import { getMemhubHome, getTokenPath } from '../paths.js';
 import { parsePortValue, requireValue } from './args.js';
-import { postApiJson, printApiFailure } from './client.js';
+import { postApiJson, printApiFailure, remoteApiFetch } from './client.js';
+import { normalizeBaseUrl, resolveRemoteToken } from './credentials.js';
 
 /** Options for the add command. */
 export interface AddCommandOptions {
@@ -22,6 +23,8 @@ export interface AddCommandOptions {
   readonly cues: readonly string[];
   readonly writer: string | undefined;
   readonly port: number;
+  /** Remote daemon base URL (memhub login target); local when unset. */
+  readonly url?: string | undefined;
   /** Data directory override (tests). */
   readonly home?: string | undefined;
   /** Stdin reader override (tests); defaults to draining process.stdin. */
@@ -40,6 +43,8 @@ export function parseAddArgs(argv: readonly string[]): AddCommandOptions {
   const cues: string[] = [];
   let writer: string | undefined;
   let port = 7800;
+  let portSet = false;
+  let url: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--title') {
@@ -60,6 +65,9 @@ export function parseAddArgs(argv: readonly string[]): AddCommandOptions {
       writer = requireValue('--writer', argv[++i]);
     } else if (arg === '--port' || arg === '-p') {
       port = parsePortValue(argv[++i]);
+      portSet = true;
+    } else if (arg === '--url') {
+      url = requireValue('--url', argv[++i]);
     } else {
       throw new Error(`unknown option for add: ${arg}`);
     }
@@ -67,7 +75,13 @@ export function parseAddArgs(argv: readonly string[]): AddCommandOptions {
   if (title === undefined) {
     throw new Error('--title is required');
   }
-  return { title, body, type, cues, writer, port };
+  if (url !== undefined && normalizeBaseUrl(url) === null) {
+    throw new Error(`invalid --url value: ${url}`);
+  }
+  if (url !== undefined && portSet) {
+    throw new Error('--url and --port are mutually exclusive');
+  }
+  return { title, body, type, cues, writer, port, url };
 }
 
 /** Run the add command. Returns the process exit code. */
@@ -87,12 +101,6 @@ export async function runAddCommand(options: AddCommandOptions): Promise<number>
     return 1;
   }
 
-  const token = readToken(getTokenPath(options.home ?? getMemhubHome()));
-  if (token === null) {
-    console.error('No MemHub token found — start the daemon first: memhub server');
-    return 1;
-  }
-
   const payload: Record<string, unknown> = {
     title: options.title,
     body,
@@ -103,9 +111,35 @@ export async function runAddCommand(options: AddCommandOptions): Promise<number>
     payload.writer = options.writer;
   }
 
+  if (options.url !== undefined) {
+    const baseUrl = normalizeBaseUrl(options.url);
+    if (baseUrl === null) {
+      console.error(`Invalid server URL: ${options.url}`);
+      return 1;
+    }
+    const resolved = resolveRemoteToken(baseUrl, options.home ?? getMemhubHome());
+    if ('error' in resolved) {
+      console.error(`${resolved.error} — run: memhub login ${baseUrl}`);
+      return 1;
+    }
+    const result = await remoteApiFetch(baseUrl, resolved.token, 'POST', '/api/cards', payload);
+    if (result.kind !== 'ok' || result.status !== 202) {
+      printApiFailure(result, baseUrl);
+      return 1;
+    }
+    console.log(JSON.stringify(result.body));
+    return 0;
+  }
+
+  const token = resolveExistingToken(getTokenPath(options.home ?? getMemhubHome()));
+  if (token === null) {
+    console.error('No MemHub token found — start the daemon first: memhub server');
+    return 1;
+  }
+
   const result = await postApiJson(options.port, token, '/api/cards', payload);
   if (result.kind !== 'ok' || result.status !== 202) {
-    printApiFailure(result, options.port);
+    printApiFailure(result, `http://127.0.0.1:${options.port}`);
     return 1;
   }
   console.log(JSON.stringify(result.body));

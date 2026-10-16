@@ -1,0 +1,24 @@
+# Only what the multi-stage build needs reaches the daemon image:
+# manifests + lockfile, TypeScript sources and the web UI sources.
+/.git
+/.github
+/.agents
+/.qoder
+/.claude
+/coverage
+/dist
+/node_modules
+/test
+/docs
+/skills
+/web/dist
+/web/node_modules
+/*.md
+/.eslintrc.cjs
+/.prettierrc
+/.gitattributes
+/.gitignore
+/vitest.config.ts
+/tsconfig.test.json
+/Dockerfile
+/.dockerignore

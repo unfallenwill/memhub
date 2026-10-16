@@ -1,9 +1,12 @@
 /**
  * HTTP client helpers for the CLI.
  *
- * The CLI talks to the daemon over the same HTTP API as hooks, using
- * 127.0.0.1 so the Host header check passes.
+ * The CLI talks to the daemon over the same HTTP API as hooks. It
+ * connects to MEMHUB_HOST when set (cloud deployments), falling back
+ * to 127.0.0.1 so the Host header check passes.
  */
+
+import { BIND_HOST_ENV } from '../paths.js';
 
 /** Health payload returned by GET /healthz. */
 export interface HealthInfo {
@@ -26,8 +29,17 @@ export type HealthProbe =
   | { readonly kind: 'other' }
   | { readonly kind: 'unreachable' };
 
+/** Host the CLI connects to: MEMHUB_HOST unless it is a wildcard bind. */
+export function connectHost(): string {
+  const host = process.env[BIND_HOST_ENV]?.trim();
+  if (host === undefined || host === '' || host === '0.0.0.0' || host === '::' || host === '[::]') {
+    return '127.0.0.1';
+  }
+  return host;
+}
+
 function baseUrl(port: number): string {
-  return `http://127.0.0.1:${port}`;
+  return `http://${connectHost()}:${port}`;
 }
 
 /**
@@ -111,19 +123,81 @@ export async function postApiJson(
 }
 
 /** Print an API failure (one JSON line for agents, hints for humans). */
-export function printApiFailure(result: ApiPostResult, port: number): void {
+export function printApiFailure(result: ApiPostResult, target: string): void {
   if (result.kind === 'unreachable') {
-    console.error(
-      `Cannot reach the MemHub daemon at http://127.0.0.1:${port} — start it with: memhub server`
-    );
+    console.error(`Cannot reach the MemHub daemon at ${target} — start it with: memhub server`);
     return;
   }
   console.error(JSON.stringify(result.body));
   if (result.status === 401) {
-    console.error('Hint: the token in ~/.memhub/token must match the running daemon.');
+    console.error(
+      'Hint: the token in ~/.memhub/token (or MEMHUB_TOKEN) must match the running daemon.'
+    );
   } else if (result.status === 403) {
-    console.error('Hint: call the daemon at http://127.0.0.1, not another hostname.');
+    console.error(
+      'Hint: the daemon rejected the Host header. Add the hostname you use to MEMHUB_ALLOWED_HOSTS, or call via http://127.0.0.1.'
+    );
   }
+}
+
+/** Probe a remote daemon by base URL (memhub login flow). */
+export async function probeHealthzUrl(
+  baseUrl: string,
+  timeoutMs = 5000,
+  fetchImpl: typeof fetch = fetch
+): Promise<HealthProbe> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/healthz`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (!response.ok) return { kind: 'other' };
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return { kind: 'other' };
+  }
+  if (isHealthInfo(body) && body.app === 'memhub') {
+    return { kind: 'memhub', info: body };
+  }
+  return { kind: 'other' };
+}
+
+/** Perform an authenticated JSON request against a remote daemon. */
+export async function remoteApiFetch(
+  baseUrl: string,
+  token: string,
+  method: string,
+  path: string,
+  payload?: unknown,
+  timeoutMs = 30_000,
+  fetchImpl: typeof fetch = fetch
+): Promise<ApiPostResult> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}${path}`, {
+      method,
+      headers: { 'x-memhub-token': token, 'content-type': 'application/json' },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  const text = await response.text();
+  let body: unknown = text;
+  if (text !== '') {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
+  return { kind: 'ok', status: response.status, body };
 }
 
 function isHealthInfo(value: unknown): value is HealthInfo {

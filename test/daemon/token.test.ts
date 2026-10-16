@@ -1,8 +1,14 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadOrCreateToken, readToken } from '../../src/daemon/token.js';
+import {
+  loadOrCreateToken,
+  readToken,
+  resolveExistingToken,
+  resolveToken,
+  TOKEN_ENV,
+} from '../../src/daemon/token.js';
 
 describe('token', () => {
   const dirs: string[] = [];
@@ -41,5 +47,53 @@ describe('token', () => {
     const path = tokenPath();
     writeFileSync(path, '');
     expect(readToken(path)).toBeNull();
+  });
+});
+
+describe('token env override', () => {
+  const dirs: string[] = [];
+
+  function tokenPath(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'memhub-token-env-'));
+    dirs.push(dir);
+    return join(dir, 'token');
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    for (const dir of dirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
+
+  it('resolveToken prefers MEMHUB_TOKEN and never writes the file', () => {
+    vi.stubEnv(TOKEN_ENV, 'env-token');
+    const path = tokenPath();
+    expect(resolveToken(path)).toBe('env-token');
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('resolveToken falls back to the token file', () => {
+    const path = tokenPath();
+    const created = loadOrCreateToken(path);
+    expect(resolveToken(path)).toBe(created);
+  });
+
+  it('resolveToken ignores a blank MEMHUB_TOKEN', () => {
+    vi.stubEnv(TOKEN_ENV, '   ');
+    const path = tokenPath();
+    expect(resolveToken(path)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('resolveExistingToken prefers MEMHUB_TOKEN without a file', () => {
+    vi.stubEnv(TOKEN_ENV, 'env-token');
+    expect(resolveExistingToken(tokenPath())).toBe('env-token');
+  });
+
+  it('resolveExistingToken falls back to the file and null', () => {
+    const path = tokenPath();
+    expect(resolveExistingToken(path)).toBeNull();
+    const created = loadOrCreateToken(path);
+    expect(resolveExistingToken(path)).toBe(created);
   });
 });

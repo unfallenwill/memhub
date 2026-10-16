@@ -1,6 +1,6 @@
 // Thin API client. Every request carries the X-Memhub-Token header with
-// the token injected by the daemon into index.html (fallback: the token
-// stored in localStorage, used by `pnpm dev`).
+// the token injected by the daemon into index.html (local daemons) or the
+// token stored in localStorage by `memhub login` (remote daemons).
 
 const TOKEN_PLACEHOLDER = '__MEMHUB_TOKEN__';
 const LOCAL_STORAGE_KEY = 'memhub.token';
@@ -20,6 +20,10 @@ export class ApiError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+export function isUnauthorized(error) {
+  return error instanceof ApiError && error.status === 401;
 }
 
 async function request(path, options = {}) {
@@ -82,4 +86,14 @@ export function getActivity({ cursor, limit } = {}) {
 /** Daemon health/statistics (no token required). */
 export function getHealth() {
   return window.fetch('/healthz').then(response => response.json());
+}
+
+/** List devices authorized via memhub login (with the current one flagged). */
+export function getDevices() {
+  return request('/api/auth/devices');
+}
+
+/** Revoke a device token by id. */
+export function revokeDevice(id) {
+  return request(`/api/auth/devices/${id}`, { method: 'DELETE' });
 }

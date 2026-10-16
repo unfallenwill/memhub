@@ -58,6 +58,20 @@ describe('parseSearchArgs', () => {
     expect(() => parseSearchArgs(['q', 'extra'])).toThrow('unexpected argument');
   });
 
+  it('parses --url and rejects it together with --port', () => {
+    expect(parseSearchArgs(['q', '--url', 'https://x.example'])).toEqual({
+      query: 'q',
+      mode: 'auto',
+      limit: 10,
+      port: 7800,
+      url: 'https://x.example',
+    });
+    expect(() => parseSearchArgs(['q', '--url', 'https://x.example', '--port', '7900'])).toThrow(
+      'mutually exclusive'
+    );
+    expect(() => parseSearchArgs(['q', '--url', 'nonsense'])).toThrow('invalid --url');
+  });
+
   it('rejects an invalid mode', () => {
     expect(() => parseSearchArgs(['q', '--mode', 'fuzzy'])).toThrow('invalid --mode');
   });
@@ -150,5 +164,43 @@ describe('runSearchCommand', () => {
     });
     expect(code).toBe(1);
     expect(error.mock.calls.flat().join('\n')).toContain('index_not_ready');
+  });
+
+  it('searches a remote daemon with the stored login token', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'memhub-search-test-'));
+    homes.push(home);
+    writeFileSync(
+      join(home, 'credentials.json'),
+      JSON.stringify({ version: 1, url: 'https://x.example', token: 'remote-token' })
+    );
+    const fetchMock = vi.fn(async () => jsonResponse({ results: [], mode_used: 'keyword' }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const code = await runSearchCommand({
+      query: 'q',
+      mode: 'auto',
+      limit: 10,
+      port: 7800,
+      url: 'https://x.example',
+      home,
+    });
+    expect(code).toBe(0);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://x.example/api/search');
+    expect((init.headers as Record<string, string>)['x-memhub-token']).toBe('remote-token');
+  });
+
+  it('exits 1 with a login hint when the remote is not logged in', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const code = await runSearchCommand({
+      query: 'q',
+      mode: 'auto',
+      limit: 10,
+      port: 7800,
+      url: 'https://x.example',
+      home: makeHome().home,
+    });
+    expect(code).toBe(1);
+    expect(error.mock.calls.flat().join('\n')).toContain('memhub login https://x.example');
   });
 });

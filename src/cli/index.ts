@@ -9,16 +9,23 @@
  *   memhub reindex                                rebuild the vector index
  *   memhub add [options]                          write a memory card
  *   memhub search <query> [options]               search cards
+ *   memhub login <url>                            authorize against a remote daemon
+ *   memhub logout                                 revoke the stored login token
+ *   memhub reset-password                         clear the admin password (server-side)
  *   memhub --help / --version
  */
 
 import { getVersion } from '../version.js';
 import { parseAddArgs, runAddCommand } from './add.js';
+import { runLoginCommand, parseLoginArgs } from './login.js';
+import { runLogoutCommand } from './logout.js';
 import { runReindexCommand } from './reindex.js';
+import { runResetPasswordCommand } from './reset-password.js';
 import { parseSearchArgs, runSearchCommand } from './search.js';
 import { parseServerArgs, runServerCommand } from './server.js';
 import { runStatusCommand } from './status.js';
 import { runStopCommand } from './stop.js';
+import { getDefaultPort } from '../paths.js';
 
 const USAGE = `MemHub CLI v${getVersion()} - local memory card daemon for AI agents
 
@@ -29,11 +36,14 @@ Usage:
   memhub reindex                                Rebuild the vector index from SQLite
   memhub add [options]                          Write a memory card (agent-facing)
   memhub search <query> [options]               Search cards, print one-line JSON
+  memhub login <url>                            Log in to a remote daemon (device flow)
+  memhub logout                                 Revoke the stored login token
+  memhub reset-password                         Clear the admin password (on the server)
   memhub --help                                 Show this help message
   memhub --version                              Show version
 
 Options:
-  --port, -p <number>    Daemon port (default 7800)
+  --port, -p <number>    Daemon port (default 7800, or MEMHUB_PORT)
   --foreground, -f       Run the server in the foreground (server command only)
 
 memhub add options:
@@ -42,10 +52,19 @@ memhub add options:
   --type <type>          fact | preference | decision | insight | pattern (default insight)
   --cues <text>          Retrieval cue; repeat the flag for multiple cues
   --writer <name>        Who wrote the card (e.g. the agent's name)
+  --url <url>            Remote daemon (memhub login target) instead of local
 
 memhub search options:
   --mode <mode>          auto | semantic | keyword (default auto)
   --limit <number>       Max results, 1-100 (default 10)
+  --url <url>            Remote daemon (memhub login target) instead of local
+
+Environment:
+  MEMHUB_HOME            Data directory (default ~/.memhub)
+  MEMHUB_HOST            Bind address (default 127.0.0.1)
+  MEMHUB_PORT            Default daemon port (default 7800)
+  MEMHUB_TOKEN           Fixed API token (default: generated into <home>/token)
+  MEMHUB_ALLOWED_HOSTS   Extra allowed Host header values, comma-separated
 `;
 
 function printHelp(): void {
@@ -58,7 +77,7 @@ function printVersion(): void {
 
 /** Parse a --port option shared by all commands. */
 function parsePort(argv: readonly string[], command: string): number {
-  let port = 7800;
+  let port = getDefaultPort();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--port' || arg === '-p') {
@@ -109,6 +128,21 @@ async function main(): Promise<number> {
   }
   if (command === 'search') {
     return runSearchCommand(parseSearchArgs(rest));
+  }
+  if (command === 'login') {
+    return runLoginCommand(parseLoginArgs(rest));
+  }
+  if (command === 'logout') {
+    if (rest.length > 0) {
+      throw new Error(`unknown option for logout: ${rest[0]}`);
+    }
+    return runLogoutCommand();
+  }
+  if (command === 'reset-password') {
+    if (rest.length > 0) {
+      throw new Error(`unknown option for reset-password: ${rest[0]}`);
+    }
+    return runResetPasswordCommand();
   }
 
   console.error(`Unknown command: ${command}`);

@@ -10,6 +10,9 @@
 import { randomBytes } from 'crypto';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 
+/** Environment variable with a fixed API token (cloud/container deployments). */
+export const TOKEN_ENV = 'MEMHUB_TOKEN';
+
 /**
  * Load the API token from <home>/token, creating it on first use.
  * The parent directory must already exist.
@@ -29,4 +32,21 @@ export function readToken(tokenPath: string): string | null {
   if (!existsSync(tokenPath)) return null;
   const value = readFileSync(tokenPath, 'utf-8').trim();
   return value === '' ? null : value;
+}
+
+/**
+ * Resolve the daemon token: MEMHUB_TOKEN wins over the token file.
+ * Unlike the file path, the env token is never persisted.
+ */
+export function resolveToken(tokenPath: string): string {
+  const fromEnv = process.env[TOKEN_ENV]?.trim();
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv;
+  return loadOrCreateToken(tokenPath);
+}
+
+/** Read the token without creating one: MEMHUB_TOKEN wins over the file. */
+export function resolveExistingToken(tokenPath: string): string | null {
+  const fromEnv = process.env[TOKEN_ENV]?.trim();
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv;
+  return readToken(tokenPath);
 }
