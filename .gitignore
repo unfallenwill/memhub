@@ -38,6 +38,7 @@ yarn-error.log*
 # Memory storage (for testing)
 .memories/
 *.memory.md
+.agents/
 .qoder/
 .claude/
 .factory/

@@ -22,13 +22,34 @@ The daemon listens on `127.0.0.1` only. All API requests (except `GET /healthz`)
 | `memhub status [--port]`      | Ping `/healthz` and print pid, uptime, stats          |
 | `memhub stop [--port]`        | Graceful shutdown; force-kills after 5 seconds        |
 | `memhub reindex`              | Rebuild the vector index from SQLite                  |
+| `memhub add [options]`        | Write a card; prints the JSON result (agent-facing)   |
+| `memhub search <query> [opt]` | Search cards; prints one line of JSON (agent-facing)  |
 | `memhub --help` / `--version` | Usage and version                                     |
 
 Starting `memhub server` when a daemon is already running prints the running pid and exits with code 0. If another program owns the port, MemHub suggests `--port` and exits with code 1.
 
-## Writing Cards (for agent hooks)
+## Writing Cards (for agents and hooks)
 
-Hooks write cards with a single non-blocking HTTP call:
+Agents with the memhub skill write cards with the CLI (no shell-escaping issues; the token stays in `~/.memhub/token` and out of the agent's context):
+
+```bash
+memhub add --title "Use pnpm in this repo" \
+  --body "The repository uses **pnpm**, never npm." \
+  --type preference --cues pnpm --cues "package manager" --writer claude
+```
+
+- Omitting `--body` reads the body from stdin — the safe way to pipe long markdown:
+
+```bash
+cat <<'EOF' | memhub add --title "Why SQLite over Postgres" --type decision
+Single user on local disk; WAL covers the write pattern.
+EOF
+```
+
+- `--type` defaults to `insight`; `--port` picks another daemon port.
+- The command prints the same JSON as the HTTP API, e.g. `{"id":1,"indexed":false,"deduplicated":false}`, and exits non-zero on failure.
+
+Hooks and scripts can also call the HTTP API directly:
 
 ```bash
 curl -s -X POST http://127.0.0.1:7800/api/cards \
@@ -51,6 +72,10 @@ curl -s -X POST http://127.0.0.1:7800/api/cards \
 ## Searching
 
 ```bash
+memhub search "package manager" --limit 10    # CLI (agent-facing), prints one line of JSON
+```
+
+```bash
 curl -s -X POST http://127.0.0.1:7800/api/search \
   -H "x-memhub-token: $(cat ~/.memhub/token)" \
   -H "content-type: application/json" \
@@ -64,6 +89,17 @@ curl -s -X POST http://127.0.0.1:7800/api/search \
 - Every mode includes a keyword fallback over active cards that have not been vector-indexed yet, deduplicated by card id, so a freshly written card is always searchable.
 - Non-active cards (archived, superseded, ...) are excluded by default.
 - Matched cards get their `hit_count` and `last_accessed_at` updated. Each result carries `score` and `matched_by` (`fts` | `cues` | `fallback` | `semantic`).
+
+## Agent Skill
+
+The [skills CLI](https://github.com/vercel-labs/skills) installs a `memhub` skill that teaches coding agents when to search, when to write a card, and when not to:
+
+```bash
+npx skills add unfallenwill/memhub -g    # global (~/.claude/skills/ for Claude Code, etc.)
+npx skills add unfallenwill/memhub       # project-level (./<agent>/skills/, commit it with the repo)
+```
+
+The skill lives at `skills/memhub/SKILL.md` in the MemHub repository. It only instructs the agent — no hooks are installed, all writes stay explicit `memhub add` calls that you can review in the activity log.
 
 ## Background Indexing
 

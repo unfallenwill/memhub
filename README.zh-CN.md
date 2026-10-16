@@ -19,25 +19,31 @@ MemHub 只提供**机制**（存、取、索引、审计）。生命周期策略
 ```bash
 npm install -g memhub
 memhub server          # 启动守护进程（后台，127.0.0.1:7800）
+npx skills add unfallenwill/memhub -g   # 可选：教会你的 agent 使用它
 ```
 
-从 agent hook 写入一张卡：
+从 agent（通过 memhub skill）或任意 hook 写入一张卡：
+
+```bash
+memhub add --title "本仓库使用pnpm" \
+  --body "所有命令都用 **npx pnpm** 执行。" \
+  --type preference --cues pnpm --writer claude
+# → {"id":1,"indexed":false}  （索引在后台完成）
+```
+
+或者用 curl：
 
 ```bash
 curl -s -X POST http://127.0.0.1:7800/api/cards \
   -H "x-memhub-token: $(cat ~/.memhub/token)" \
   -H "content-type: application/json" \
   -d '{"title":"本仓库使用pnpm","body":"所有命令都用 **npx pnpm** 执行。","type":"preference","cues":["pnpm","构建"],"writer":"claude-hook"}'
-# → 202 {"id":1,"indexed":false}  （索引在后台完成）
 ```
 
 检索——关键词立即可用，本地 embedding 模型加载完成后语义检索自动生效：
 
 ```bash
-curl -s -X POST http://127.0.0.1:7800/api/search \
-  -H "x-memhub-token: $(cat ~/.memhub/token)" \
-  -H "content-type: application/json" \
-  -d '{"query":"包管理器"}'
+memhub search "包管理器"
 ```
 
 浏览器打开 **http://127.0.0.1:7800/**：浏览卡片、阅读渲染后的 markdown、查看活动流。
@@ -69,6 +75,8 @@ hook (curl) ──► HTTP API ──► SQLite（cards、events、activity log�
 | `memhub status` | 健康状态、统计、队列积压 |
 | `memhub stop` | 优雅停止，超时强杀兜底 |
 | `memhub reindex` | 从 SQLite 全量重建向量索引 |
+| `memhub add [选项]` | 写卡（面向 agent；支持 stdin 传 body） |
+| `memhub search <query> [选项]` | 检索卡片，输出单行 JSON |
 
 | API | 说明 |
 | --- | --- |

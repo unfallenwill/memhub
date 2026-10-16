@@ -7,11 +7,15 @@
  *   memhub status [--port 7800]                   show daemon status
  *   memhub stop [--port 7800]                     stop the daemon
  *   memhub reindex                                rebuild the vector index
+ *   memhub add [options]                          write a memory card
+ *   memhub search <query> [options]               search cards
  *   memhub --help / --version
  */
 
 import { getVersion } from '../version.js';
+import { parseAddArgs, runAddCommand } from './add.js';
 import { runReindexCommand } from './reindex.js';
+import { parseSearchArgs, runSearchCommand } from './search.js';
 import { parseServerArgs, runServerCommand } from './server.js';
 import { runStatusCommand } from './status.js';
 import { runStopCommand } from './stop.js';
@@ -23,12 +27,25 @@ Usage:
   memhub status [--port 7800]                   Show daemon status
   memhub stop [--port 7800]                     Stop the daemon
   memhub reindex                                Rebuild the vector index from SQLite
+  memhub add [options]                          Write a memory card (agent-facing)
+  memhub search <query> [options]               Search cards, print one-line JSON
   memhub --help                                 Show this help message
   memhub --version                              Show version
 
 Options:
   --port, -p <number>    Daemon port (default 7800)
   --foreground, -f       Run the server in the foreground (server command only)
+
+memhub add options:
+  --title <text>         Card title (required)
+  --body <text>          Card body; omit to read it from stdin
+  --type <type>          fact | preference | decision | insight | pattern (default insight)
+  --cues <text>          Retrieval cue; repeat the flag for multiple cues
+  --writer <name>        Who wrote the card (e.g. the agent's name)
+
+memhub search options:
+  --mode <mode>          auto | semantic | keyword (default auto)
+  --limit <number>       Max results, 1-100 (default 10)
 `;
 
 function printHelp(): void {
@@ -86,6 +103,12 @@ async function main(): Promise<number> {
       throw new Error(`unknown option for reindex: ${rest[0]}`);
     }
     return runReindexCommand();
+  }
+  if (command === 'add') {
+    return runAddCommand(parseAddArgs(rest));
+  }
+  if (command === 'search') {
+    return runSearchCommand(parseSearchArgs(rest));
   }
 
   console.error(`Unknown command: ${command}`);

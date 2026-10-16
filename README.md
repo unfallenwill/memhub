@@ -19,25 +19,31 @@ MemHub provides the **mechanism** (store, index, retrieve, audit). Lifecycle pol
 ```bash
 npm install -g memhub
 memhub server          # start the daemon (background, 127.0.0.1:7800)
+npx skills add unfallenwill/memhub -g   # optional: teach your agent to use it
 ```
 
-Write a card from an agent hook:
+Write a card from your agent (via the memhub skill) or any hook:
+
+```bash
+memhub add --title "Use pnpm in this repo" \
+  --body "All commands run via **npx pnpm**." \
+  --type preference --cues pnpm --writer claude
+# → {"id":1,"indexed":false}  (indexing happens in the background)
+```
+
+Or with curl:
 
 ```bash
 curl -s -X POST http://127.0.0.1:7800/api/cards \
   -H "x-memhub-token: $(cat ~/.memhub/token)" \
   -H "content-type: application/json" \
   -d '{"title":"Use pnpm in this repo","body":"All commands run via **npx pnpm**.","type":"preference","cues":["pnpm","build"],"writer":"claude-hook"}'
-# → 202 {"id":1,"indexed":false}  (indexing happens in the background)
 ```
 
 Search — keyword works instantly, semantic kicks in once the local embedding model loads:
 
 ```bash
-curl -s -X POST http://127.0.0.1:7800/api/search \
-  -H "x-memhub-token: $(cat ~/.memhub/token)" \
-  -H "content-type: application/json" \
-  -d '{"query":"package manager"}'
+memhub search "package manager"
 ```
 
 Open **http://127.0.0.1:7800/** in a browser to browse cards, read rendered markdown, and inspect the activity feed.
@@ -69,6 +75,8 @@ hook (curl) ──► HTTP API ──► SQLite (cards, events, activity log)   
 | `memhub status` | Health, stats, queue backlog |
 | `memhub stop` | Graceful stop, force-kill fallback |
 | `memhub reindex` | Rebuild the vector index from SQLite |
+| `memhub add [options]` | Write a card (agent-facing; stdin body supported) |
+| `memhub search <query> [options]` | Search cards, print one-line JSON |
 
 | API | Description |
 | --- | --- |
