@@ -125,12 +125,12 @@ The embedding model (`Xenova/all-MiniLM-L6-v2`, ~25 MB) is downloaded once on fi
 
 ## HTTP API
 
-All responses use the error shape `{"error":{"code":"message"}}`. All `/api/*` routes require the `X-Memhub-Token` header, and every request must target `localhost` or `127.0.0.1` (DNS-rebinding defense). Exception: the device-login routes (`/oauth/*`, `/login`) are token-exempt — `/oauth/device/code` is the public entry point of the device flow and `/login` authenticates with the admin password. They answer with the flat OAuth error shape `{"error":"...","error_description":"..."}`.
+All responses use the error shape `{"error":{"code":"message"}}`. All `/api/*` routes require the `X-Memhub-Token` header, and every request must carry a local Host header (`localhost`/`127.0.0.1`, accepted only for connections that actually originate from the machine) or one configured via `MEMHUB_ALLOWED_HOSTS` (DNS-rebinding defense). Request bodies are capped: 4 KB on the device-flow endpoints, 2 MB on `/api/*` (HTTP 413). Exception: the device-login routes (`/oauth/*`, `/login`) are token-exempt — `/oauth/device/code` is the public entry point of the device flow and `/login` authenticates with the admin password. They answer with the flat OAuth error shape `{"error":"...","error_description":"..."}`.
 
 | Method & Path                                 | Description                                            |
 | --------------------------------------------- | ------------------------------------------------------ |
 | `GET /healthz`                                | Liveness + stats (no token required)                   |
-| `POST /api/shutdown`                          | Graceful shutdown                                      |
+| `POST /api/shutdown`                          | Graceful shutdown (daemon token only)                  |
 | `POST /api/cards`                             | Create a card (202)                                    |
 | `GET /api/cards`                              | List cards; `status=`, `type=`, `cursor=`, `limit=`    |
 | `GET /api/cards/:id`                          | Fetch one card                                         |
@@ -186,13 +186,13 @@ memhub login https://memhub.example.com
 How it works:
 
 - `memhub login` stores `{url, token}` in `~/.memhub/credentials.json` (0600). Afterwards `memhub add --url https://memhub.example.com ...` and `memhub search --url ...` target the remote daemon with that token.
-- There is **no preset admin password**: the very first login bootstraps it in the browser. Because the first person to complete a login defines the password, complete the first login right after deploying. (The setup form only appears for a pending login code started from a CLI, which raises the bar for accidental takeover.)
+- There is **no preset admin password**: the very first login bootstraps it in the browser. It is protected by a one-time **setup code** the daemon writes to `setup-code` in its data directory (and prints at startup): completing the first login requires that code, so only someone with access to the server itself can claim a fresh deployment. The code file is deleted once the password is set.
 - The browser receives the same token via a URL fragment and the web UI stores it in `localStorage`; remote web sessions are device sessions.
 - Passwords are stored as scrypt hashes; tokens are stored as SHA-256 hashes — neither the password nor a usable token is ever written to the database.
 - **Multiple devices**: run `memhub login` on each machine. The web UI's **Devices** page lists them all (label, authorized/last-used times) with a per-device revoke button. Revoking a device immediately invalidates its token; the device can log in again.
 - `memhub logout` revokes the current device's token and forgets the credentials.
 - **Forgot the password**: on the server, run `memhub stop` and then `memhub reset-password`. It clears the admin password (the next login re-runs setup) and revokes every device token.
-- Rate limits: 5 failed password attempts per minute per IP, 3 wrong attempts per login code, 5-minute code expiry.
+- Rate limits: 5 failed password attempts per minute per IP, 3 wrong attempts per login code, 5-minute code expiry, at most 10 pending login codes per IP. The limits key on the TCP peer address: behind a reverse proxy every visitor shares one bucket, and an attacker through the same proxy can briefly lock out logins for everyone behind it — put a per-client rate limit on the proxy too when this matters.
 
 `memhub status` and `memhub stop` always manage the **local** daemon; remote cards are read/written through `add`/`search --url`.
 
@@ -229,15 +229,17 @@ docker build -t memhub .
 docker run -d --name memhub \
   -p 7800:7800 \
   -v memhub-data:/data \
-  -e MEMHUB_TOKEN=change-me \
+  -e MEMHUB_TOKEN="$(openssl rand -hex 32)" \
   -e MEMHUB_ALLOWED_HOSTS=memhub.example.com \
   memhub
-curl http://localhost:7800/healthz
+# From the host machine the connection arrives via the Docker bridge (not
+# loopback), so the probe must carry the allowed hostname:
+curl -H "Host: memhub.example.com" http://localhost:7800/healthz
 ```
 
 - The image binds `0.0.0.0` inside the container and stores all data under `/data` (mount a volume to persist it).
-- `MEMHUB_TOKEN` is the API token; without it one is generated into `/data/token` (read it with `docker exec memhub cat /data/token`).
-- Requests must still carry an allowed Host header: put your hostname (or load balancer) in `MEMHUB_ALLOWED_HOSTS`, or terminate TLS at a proxy that forwards `Host: localhost`. Never expose the daemon to the public internet without your own auth/TLS in front.
+- `MEMHUB_TOKEN` is the API token — generate a random one (as above); never deploy a fixed, guessable value. Without it one is generated into `/data/token` (read it with `docker exec memhub cat /data/token`).
+- Requests must still carry an allowed Host header: put your hostname (or load balancer) in `MEMHUB_ALLOWED_HOSTS`. Local Host values (`localhost`, `127.0.0.1`) are only accepted from connections that originate on the machine itself — a proxy must forward the real hostname, and a published container port seen from the host counts as non-local, so curl from the host needs `-H "Host: <allowed host>"` (or `curl --resolve`). Never expose the daemon to the public internet without your own auth/TLS in front.
 - First start downloads the embedding model (~30 MB) into `/data/models`; semantic search is offline afterwards.
 - arm64 and amd64 images build from the same Dockerfile (`docker buildx build --platform linux/amd64,linux/arm64`).
 
@@ -248,18 +250,20 @@ memhub login https://memhub.example.com
 memhub add --url https://memhub.example.com --title "..." --body "..."
 ```
 
-Do this promptly: the first completed login defines the server's admin password.
+Do this promptly: the first completed login defines the server's admin password. The login page will ask for the **setup code** — read it on the server with `docker exec memhub cat /data/setup-code` (or from the container logs); the code proves you own the server, and the file is deleted after setup.
 
 ## Troubleshooting
 
 - **`Port 7800 is already in use by another program`** — start with `--port`.
 - **`401 unauthorized`** — send the token from `~/.memhub/token` (or `MEMHUB_TOKEN`) as `X-Memhub-Token`; on remote daemons log in first (`memhub login <url>`).
-- **`403 invalid_host`** — call `http://127.0.0.1:7800` (or `localhost`), or add your hostname to `MEMHUB_ALLOWED_HOSTS`.
+- **`403 invalid_host`** — local Host values (`localhost`, `127.0.0.1`) are only accepted when the connection actually originates on the machine. For remote daemons, Docker published ports seen from the host, VMs and proxies, put your hostname in `MEMHUB_ALLOWED_HOSTS` and send it (e.g. `curl -H "Host: memhub.example.com" http://<host>:7800/healthz` or `memhub login https://memhub.example.com`).
 - **`503 index_not_ready`** — the embedding model is still loading (or its download failed); keyword and `auto` search keep working.
 - **`501 semantic_not_installed`** — the optional semantic packages are not installed. The daemon runs keyword-only; install `@huggingface/transformers` and `@lancedb/lancedb` next to memhub (e.g. `npm install -g @huggingface/transformers @lancedb/lancedb`) and restart. `memhub reindex` needs them too.
 - **`The login code expired`** — the 5-minute window elapsed (or the daemon restarted, which drops in-flight logins). Run `memhub login` again.
 - **`403` during `memhub login`** — the daemon's `MEMHUB_ALLOWED_HOSTS` must include the hostname you use in the URL.
 - **Forgot the admin password** — on the server: `memhub stop`, then `memhub reset-password` (clears the password and revokes all devices), then start the daemon and `memhub login` again.
+- **`Wrong device code or password` on the very first login** — the setup-code check failed. Use the code from the daemon's startup output or the `setup-code` file in its data directory (`/data/setup-code` in Docker). If the code is gone or rejected while no admin password exists yet, delete the `setup-code` file on the server and try again — the daemon mints a fresh code on the next attempt (no restart needed).
+- **`413 payload_too_large` / `request body too large`** — the request body exceeded the size cap (4 KB for the login/device-flow endpoints, 2 MB for `/api/*`).
 - **`credentials.json` permissions on Windows** — the 0600 mode is a POSIX concept; Windows ignores it, the file inherits your profile's ACLs.
 - **Semantic results look wrong after switching versions** — run `memhub reindex` (or just restart the daemon; a changed model triggers an automatic rebuild). Stop the daemon first: two processes writing the same LanceDB directory is not supported.
 - **Daemon did not start** — check `~/.memhub/logs/server-error.log`.

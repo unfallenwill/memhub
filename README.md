@@ -120,7 +120,7 @@ docker run -d -p 7800:7800 -v memhub-data:/data \
   memhub
 ```
 
-Data persists under `/data` (SQLite, vector index, model cache). After deploying, `memhub login https://memhub.example.com` from any machine — the first login sets the admin password in the browser and issues per-device tokens (revocable from the web UI's Devices page). Details: [docs/user-guide.md](docs/user-guide.md#docker).
+Data persists under `/data` (SQLite, vector index, model cache). After deploying, `memhub login https://memhub.example.com` from any machine — the first login sets the admin password in the browser (protected by a one-time setup code from the server's `/data/setup-code`) and issues per-device tokens (revocable from the web UI's Devices page). Details: [docs/user-guide.md](docs/user-guide.md#docker).
 
 ## Development
 

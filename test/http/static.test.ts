@@ -16,6 +16,9 @@ import { createTestDb, type TestDb } from '../test-utils.js';
 
 const TOKEN = 'static-test-token';
 
+/** Loopback env: the Host check fails closed without socket info. */
+const LOCAL_ENV = { incoming: { socket: { remoteAddress: '127.0.0.1' } } };
+
 /** Build a minimal fake web dist in a temp directory. */
 function buildFakeDist(): string {
   const root = mkdtempSync(join(tmpdir(), 'memhub-webdist-'));
@@ -63,6 +66,20 @@ describe('StaticSite', () => {
       const file = site.index(TOKEN);
       expect(file!.cacheControl).toBe('no-store');
       expect(file!.contentType).toBe('text/html; charset=utf-8');
+    });
+
+    it('carries a restrictive CSP and referrer policy', () => {
+      const site = new StaticSite(dist);
+      const headers = site.index(TOKEN)!.headers ?? {};
+      const csp = headers['content-security-policy'] ?? '';
+      // No remote sources of any kind; framing blocked.
+      expect(csp).toContain("default-src 'self'");
+      expect(csp).toContain("object-src 'none'");
+      expect(csp).toContain("frame-ancestors 'none'");
+      expect(csp).toContain("form-action 'self'");
+      // The inline token bootstrap script is the only inline allowance.
+      expect(csp).toContain("script-src 'self' 'unsafe-inline'");
+      expect(headers['referrer-policy']).toBe('no-referrer');
     });
 
     it('returns null when index.html is missing', () => {
@@ -136,6 +153,20 @@ describe('staticResponse', () => {
     });
     expect(response.headers.get('content-type')).toBe('text/plain');
     expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('always adds nosniff and merges per-file security headers', () => {
+    const plain = staticResponse({ body: 'x', contentType: 'text/plain', cacheControl: 'public' });
+    expect(plain.headers.get('x-content-type-options')).toBe('nosniff');
+
+    const withCsp = staticResponse({
+      body: 'x',
+      contentType: 'text/html; charset=utf-8',
+      cacheControl: 'no-store',
+      headers: { 'content-security-policy': "default-src 'self'" },
+    });
+    expect(withCsp.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(withCsp.headers.get('content-security-policy')).toBe("default-src 'self'");
   });
 });
 
@@ -221,7 +252,7 @@ describe('static hosting routes', () => {
       host: '127.0.0.1:7800',
       ...((init.headers as Record<string, string>) ?? {}),
     };
-    return app.request(path, { ...init, headers });
+    return app.request(path, { ...init, headers }, LOCAL_ENV);
   }
 
   beforeEach(() => {
@@ -240,16 +271,30 @@ describe('static hosting routes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
     expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(response.headers.get('content-security-policy')).toContain("default-src 'self'");
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     const html = await response.text();
     expect(html).toContain(`window.__MEMHUB_TOKEN__ = "${TOKEN}"`);
     expect(html).not.toContain(`"${TOKEN_PLACEHOLDER}"`);
   });
 
-  it('serves hashed assets from the dist directory', async () => {
+  it('serves hashed assets with nosniff', async () => {
     const response = await request('/assets/app.js');
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(await response.text()).toBe('console.log("app");');
+  });
+
+  it('serves the token-injected index with the CSP at /index.html too', async () => {
+    const response = await request('/index.html');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-security-policy')).toContain("default-src 'self'");
+    const html = await response.text();
+    expect(html).toContain(`window.__MEMHUB_TOKEN__ = "${TOKEN}"`);
+    expect(html).not.toContain(`"${TOKEN_PLACEHOLDER}"`);
   });
 
   it('keeps the Host header check in front of static files', async () => {
@@ -291,7 +336,7 @@ describe('static hosting routes', () => {
       startedAt: Date.now(),
       requestShutdown: () => {},
     });
-    const response = await app.request('/', { headers: { host: '127.0.0.1:7800' } });
+    const response = await app.request('/', { headers: { host: '127.0.0.1:7800' } }, LOCAL_ENV);
     expect(response.status).toBe(404);
     const body = (await response.json()) as { error: { code: string } };
     expect(body.error.code).toBe('not_found');

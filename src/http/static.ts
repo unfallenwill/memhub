@@ -56,6 +56,8 @@ export interface StaticFile {
   readonly body: string | Uint8Array;
   readonly contentType: string;
   readonly cacheControl: string;
+  /** Extra security headers for this file (e.g. the CSP on index.html). */
+  readonly headers?: Readonly<Record<string, string>> | undefined;
 }
 
 /** Content types for the file extensions a Vite build can emit. */
@@ -127,6 +129,11 @@ export class StaticSite {
    * only the quoted placeholder value is replaced (the variable name
    * contains the same identifier), with JSON.stringify handling any
    * escaping.
+   *
+   * The CSP allows the inline token bootstrap script (its content is
+   * dynamic, so a hash is impossible) but blocks all remote sources,
+   * framing and form submission — the token is the only secret on the
+   * page, so keeping exfiltration paths closed matters.
    */
   index(token: string): StaticFile | null {
     const file = this.file('/index.html');
@@ -137,6 +144,13 @@ export class StaticSite {
       body: html.split(quotedPlaceholder).join(JSON.stringify(token)),
       contentType: file.contentType,
       cacheControl: 'no-store',
+      headers: {
+        'content-security-policy':
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+          "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; " +
+          "base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+        'referrer-policy': 'no-referrer',
+      },
     };
   }
 }
@@ -147,6 +161,8 @@ export function staticResponse(file: StaticFile): Response {
     headers: {
       'content-type': file.contentType,
       'cache-control': file.cacheControl,
+      'x-content-type-options': 'nosniff',
+      ...file.headers,
     },
   });
 }
