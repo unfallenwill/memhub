@@ -23,6 +23,8 @@ export interface LoginPageOptions {
   readonly state: LoginPageState;
   /** Whether the admin password has been initialized. */
   readonly initialized: boolean;
+  /** Path of the setup code file on the server (first login only). */
+  readonly setupCodePath?: string | undefined;
 }
 
 /** Escape a value for safe interpolation into HTML text/attributes. */
@@ -56,15 +58,22 @@ interface FormSpec {
   readonly heading: string;
   readonly intro: string;
   readonly confirmField: boolean;
+  readonly setupCodeField: boolean;
   readonly submitLabel: string;
 }
 
-function formSpec(state: LoginPageState): FormSpec {
+function formSpec(state: LoginPageState, setupCodePath: string | undefined): FormSpec {
   if (state === 'setup') {
+    const where = setupCodePath
+      ? ` on the server: <code>cat ${escapeHtml(setupCodePath)}</code>`
+      : ' on the server (the setup-code file in the MemHub data directory)';
     return {
       heading: 'Set the admin password',
-      intro: 'This is the first login. Choose the administrator password for this MemHub server.',
+      intro:
+        'This is the first login. Enter the setup code — found' +
+        ` ${where} — then choose the administrator password for this MemHub server.`,
       confirmField: true,
+      setupCodeField: true,
       submitLabel: 'Set password and authorize',
     };
   }
@@ -72,6 +81,7 @@ function formSpec(state: LoginPageState): FormSpec {
     heading: 'Authorize this device',
     intro: 'Enter the admin password to allow the device that started this login.',
     confirmField: false,
+    setupCodeField: false,
     submitLabel: 'Authorize',
   };
 }
@@ -92,7 +102,7 @@ export function renderLoginPage(options: LoginPageOptions): string {
             : 'setup'
           : null
         : null;
-  const spec = formState !== null ? formSpec(formState) : null;
+  const spec = formState !== null ? formSpec(formState, options.setupCodePath) : null;
   const code = escapeHtml(options.prefilledCode ?? '');
 
   let message = '';
@@ -115,6 +125,12 @@ export function renderLoginPage(options: LoginPageOptions): string {
          <input type="password" id="password_confirm" name="password_confirm"
                 autocomplete="new-password" required minlength="8">`
       : '';
+    const setupCodeField = spec.setupCodeField
+      ? `<label for="setup_code">Setup code</label>
+         <input class="code" id="setup_code" name="setup_code"
+                maxlength="13" autocomplete="one-time-code" required autofocus>`
+      : '';
+    const passwordAutofocus = spec.setupCodeField ? '' : ' autofocus';
     body = `
 <h1>${spec.heading}</h1>
 <p>${spec.intro}</p>
@@ -122,7 +138,8 @@ ${message}
 <form method="POST" action="/oauth/device/authorize">
   <label for="user_code">Device code</label>
   <input class="code" id="user_code" name="user_code" value="${code}"
-         maxlength="12" autocomplete="off" required autofocus>
+         maxlength="12" autocomplete="off"${passwordAutofocus} required>
+  ${setupCodeField}
   <label for="password">Admin password</label>
   <input type="password" id="password" name="password"
          autocomplete="${spec.confirmField ? 'new-password' : 'current-password'}" required minlength="8">
@@ -138,8 +155,9 @@ ${message}`;
 <h1>MemHub</h1>
 <p>Remote login is not set up yet. Start it from a device:</p>
 <pre>memhub login &lt;this server URL&gt;</pre>
-<p class="hint">The first login sets the admin password, so it must be started
-by the server owner from a CLI.</p>`;
+<p class="hint">The first login sets the admin password and needs the setup code
+from the server's MemHub data directory, so it must be started by the server
+owner from a CLI.</p>`;
   } else {
     body = `
 <h1>Authorization failed</h1>

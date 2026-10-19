@@ -21,9 +21,11 @@ import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { DeviceTokenStore, tokenHash } from '../db/device-tokens.js';
 import { AdminPasswordStore, hashPassword, verifyPassword } from '../daemon/admin-password.js';
+import { normalizeSetupCode } from '../daemon/setup-code.js';
 import { invalidRequest, notFound } from './errors.js';
 import { LOGIN_PAGE_HEADERS, renderLoginPage, type LoginPageState } from './login-page.js';
 import { RateLimiter } from './rate-limiter.js';
+import { remoteAddressOf } from './request-info.js';
 
 /** How long an unapproved device grant stays valid. */
 export const DEVICE_CODE_TTL_S = 300;
@@ -85,6 +87,8 @@ export interface DeviceGrant {
   readonly deviceCode: string;
   readonly userCode: string;
   readonly label: string;
+  /** Origin address of the code request (per-address grant cap). */
+  readonly ip: string | null;
   readonly expiresAt: number;
   status: DeviceGrantStatus;
   attempts: number;
@@ -97,6 +101,12 @@ export interface DeviceGrant {
 export interface DeviceGrantStoreOptions {
   readonly ttlMs: number;
   readonly maxPending: number;
+  /**
+   * Pending grants a single address may hold at once. Keeps one host
+   * from filling the global maxPending and blocking every legitimate
+   * login (and first-run setup) worldwide.
+   */
+  readonly maxPendingPerIp?: number | undefined;
   readonly now?: (() => number) | undefined;
 }
 
@@ -111,13 +121,22 @@ export class DeviceGrantStore {
   }
 
   /** Create a new pending grant; null when capacity is exhausted. */
-  create(label: string): DeviceGrant | null {
+  create(label: string, ip: string | null = null): DeviceGrant | null {
     this.pruneExpired();
     if (this.grants.size >= this.options.maxPending) return null;
+    if (ip !== null) {
+      const perIp = this.options.maxPendingPerIp ?? DEFAULT_MAX_PENDING_PER_IP;
+      let fromIp = 0;
+      for (const grant of this.grants.values()) {
+        if (grant.ip === ip) fromIp++;
+      }
+      if (fromIp >= perIp) return null;
+    }
     const grant: DeviceGrant = {
       deviceCode: randomBytes(32).toString('hex'),
       userCode: generateUserCode(),
       label,
+      ip,
       expiresAt: this.now() + this.options.ttlMs,
       status: 'pending',
       attempts: 0,
@@ -171,11 +190,14 @@ export interface DeviceAuthLimits {
   readonly authorizeFailuresPerMin: number;
   /** device/code requests per IP per window. */
   readonly codeRequestsPerMin: number;
+  /** Pending grants a single address may hold at once. */
+  readonly pendingGrantsPerIp: number;
 }
 
 const DEFAULT_LIMITS: DeviceAuthLimits = {
   authorizeFailuresPerMin: 5,
   codeRequestsPerMin: 30,
+  pendingGrantsPerIp: 10,
 };
 
 /** Dependencies for registerDeviceAuthRoutes. */
@@ -186,11 +208,26 @@ export interface DeviceAuthDeps {
   readonly webDist?: string | undefined;
   readonly now?: (() => number) | undefined;
   readonly limits?: Partial<DeviceAuthLimits> | undefined;
+  /**
+   * Lazily supplies the first-run setup code; called only while the
+   * admin password is unset, so `memhub reset-password` (which clears
+   * the password) re-enables setup without a daemon restart. Returns
+   * null when no code is available — the first-login setup is then
+   * refused. Without this check anyone on the network could set the
+   * admin password of a fresh deployment and take it over.
+   */
+  readonly getSetupCode?: (() => string | null) | undefined;
+  /** Path of the setup code file on the server (shown on the login page). */
+  readonly setupCodePath?: string | undefined;
+  /** Called after the admin password was set through the setup flow. */
+  readonly onSetupComplete?: (() => void) | undefined;
 }
 
 const CLIENT_ID = 'memhub-cli';
 const DEVICE_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:device_code';
-const MAX_BODY_BYTES = 4096;
+
+/** Default per-address cap on pending grants. */
+const DEFAULT_MAX_PENDING_PER_IP = 10;
 
 const deviceCodeSchema = z.object({
   client_id: z.literal(CLIENT_ID),
@@ -217,13 +254,6 @@ const deviceTokenSchema = z.object({
   device_code: z.string().min(1).max(128),
   client_id: z.literal(CLIENT_ID),
 });
-
-/** Best-effort remote address of the request (never trusts XFF). */
-function remoteAddressOf(c: Context): string {
-  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)
-    ?.incoming;
-  return incoming?.socket?.remoteAddress ?? 'unknown';
-}
 
 /** Validate and normalize a client-provided base_url. */
 function normalizeBaseUrl(raw: string | undefined): string | null {
@@ -258,23 +288,17 @@ function htmlResponse(html: string, status: number): Response {
   return new Response(html, { status, headers: LOGIN_PAGE_HEADERS });
 }
 
-/** Whether the request body is within the size guard. */
-function bodyTooLarge(c: Context): boolean {
-  const length = c.req.header('content-length');
-  if (length === undefined) return false;
-  return Number(length) > MAX_BODY_BYTES;
-}
-
 /** Register all device-flow routes on the app (before the SPA wildcard). */
 export function registerDeviceAuthRoutes(app: Hono, deps: DeviceAuthDeps): void {
   const adminAuth = new AdminPasswordStore(deps.db);
   const deviceTokens = new DeviceTokenStore(deps.db);
+  const limits = { ...DEFAULT_LIMITS, ...deps.limits };
   const grants = new DeviceGrantStore({
     ttlMs: DEVICE_CODE_TTL_S * 1000,
     maxPending: 1000,
+    maxPendingPerIp: limits.pendingGrantsPerIp,
     now: deps.now,
   });
-  const limits = { ...DEFAULT_LIMITS, ...deps.limits };
   const now = (): number => deps.now?.() ?? Date.now();
   const authorizeLimiter = new RateLimiter({
     windowMs: 60_000,
@@ -284,7 +308,6 @@ export function registerDeviceAuthRoutes(app: Hono, deps: DeviceAuthDeps): void 
   const codeLimiter = new RateLimiter({ windowMs: 60_000, max: limits.codeRequestsPerMin, now });
 
   app.post('/oauth/device/code', async c => {
-    if (bodyTooLarge(c)) return oauthError('invalid_request', 'request body too large', 400);
     const limit = codeLimiter.hit(remoteAddressOf(c));
     if (!limit.allowed) {
       return oauthError('slow_down', `try again in ${limit.retryAfterS}s`, 429);
@@ -299,7 +322,7 @@ export function registerDeviceAuthRoutes(app: Hono, deps: DeviceAuthDeps): void 
     if (!parsed.success) {
       return oauthError('invalid_request', 'invalid device authorization request', 400);
     }
-    const grant = grants.create(parsed.data.label ?? 'cli');
+    const grant = grants.create(parsed.data.label ?? 'cli', remoteAddressOf(c));
     if (grant === null) {
       return oauthError('slow_down', 'too many pending authorizations', 429);
     }
@@ -345,13 +368,13 @@ export function registerDeviceAuthRoutes(app: Hono, deps: DeviceAuthDeps): void 
         prefilledCode: code === '' ? undefined : code,
         state,
         initialized,
+        setupCodePath: deps.setupCodePath,
       }),
       200
     );
   });
 
   app.post('/oauth/device/authorize', async c => {
-    if (bodyTooLarge(c)) return htmlResponse('request body too large', 400);
     const limit = authorizeLimiter.hit(remoteAddressOf(c));
     if (!limit.allowed) {
       return htmlResponse('too many attempts, wait a minute', 429);
@@ -371,14 +394,24 @@ export function registerDeviceAuthRoutes(app: Hono, deps: DeviceAuthDeps): void 
 
     let ok: boolean;
     if (!initialized) {
-      // First login: set the admin password. Both inputs must match and
-      // meet the minimum length; on success the password is stored and
-      // this grant approves the setting device.
+      // First login: set the admin password. Requires the server-local
+      // setup code on top of the matching password inputs — the pending
+      // grant alone proves nothing (anyone can create one), so without
+      // this check a fresh remote deployment could be taken over.
+      const expected = deps.getSetupCode?.() ?? null;
+      const provided = normalizeSetupCode(form.get('setup_code') ?? '');
       ok =
-        confirm !== null && confirm === password && password.length >= 8 && password.length <= 1024;
+        expected !== null &&
+        provided !== null &&
+        secretsEqual(provided, expected) &&
+        confirm !== null &&
+        confirm === password &&
+        password.length >= 8 &&
+        password.length <= 1024;
       if (ok) {
         try {
           adminAuth.set(hashPassword(password));
+          deps.onSetupComplete?.();
         } catch (error) {
           console.error('memhub: failed to store admin password:', error);
           return redirectLogin(c, grant.userCode, 'invalid');
@@ -411,7 +444,6 @@ export function registerDeviceAuthRoutes(app: Hono, deps: DeviceAuthDeps): void 
   });
 
   app.post('/oauth/device/token', async c => {
-    if (bodyTooLarge(c)) return oauthError('invalid_request', 'request body too large', 400);
     let raw: unknown;
     try {
       raw = await c.req.json();

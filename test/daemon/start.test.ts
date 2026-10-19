@@ -1,4 +1,5 @@
-import { readFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -13,8 +14,10 @@ import {
   WORKER_START_RETRY_MS,
   type DaemonHandle,
 } from '../../src/daemon/start.js';
+import { AdminPasswordStore, hashPassword } from '../../src/daemon/admin-password.js';
+import { openDatabase } from '../../src/db/database.js';
 import { LanceVectorIndex } from '../../src/storage/vector-index.js';
-import { getTokenPath } from '../../src/paths.js';
+import { getSetupCodePath, getTokenPath } from '../../src/paths.js';
 import { createTestDb, FakeEmbedder, FakeVectorStore, moduleNotFoundError } from '../test-utils.js';
 
 describe('startDaemon', () => {
@@ -293,6 +296,57 @@ describe('missing semantic stack handling', () => {
       }
     }
   );
+});
+
+describe('first-run setup code', () => {
+  it('writes a setup-code file for a fresh home', async () => {
+    const t = createTestDb();
+    t.close();
+    const handle = await startDaemon({
+      home: t.home,
+      port: 0,
+      worker: { embedder: new FakeEmbedder(), vectors: new FakeVectorStore() },
+    });
+    try {
+      const path = getSetupCodePath(t.home);
+      expect(existsSync(path)).toBe(true);
+      expect(readFileSync(path, 'utf-8').trim()).toMatch(/^[0-9A-Z]{6}-[0-9A-Z]{6}$/);
+      if (process.platform !== 'win32') {
+        expect(statSync(path).mode & 0o777).toBe(0o600);
+        // The home directory is tightened to owner-only (token, setup
+        // code, database and logs all live here).
+        expect(statSync(t.home).mode & 0o777).toBe(0o700);
+      }
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('does not write one when the admin password already exists', async () => {
+    // createTestDb().close() removes its directory, so build a home that
+    // survives (the daemon must reopen the initialized database).
+    const home = mkdtempSync(join(tmpdir(), 'memhub-setupcode-'));
+    if (process.platform !== 'win32') {
+      chmodSync(home, 0o755); // pre-loosened: the daemon must re-tighten
+    }
+    const db = openDatabase(join(home, 'memhub.db'));
+    new AdminPasswordStore(db).set(hashPassword('password-1'));
+    db.close();
+    const handle = await startDaemon({
+      home,
+      port: 0,
+      worker: { embedder: new FakeEmbedder(), vectors: new FakeVectorStore() },
+    });
+    try {
+      expect(existsSync(getSetupCodePath(home))).toBe(false);
+      if (process.platform !== 'win32') {
+        expect(statSync(home).mode & 0o777).toBe(0o700);
+      }
+    } finally {
+      await handle.close();
+      rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
 });
 
 describe('createDefaultWorkerContext', () => {

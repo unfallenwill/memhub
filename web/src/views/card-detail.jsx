@@ -4,10 +4,45 @@ import { marked } from 'marked';
 import { getCard } from '../api.js';
 import { formatTime } from '../format.js';
 
+/**
+ * Rendered card bodies are agent-written and therefore untrusted. The
+ * allowlist is deliberately narrow: no img/audio/video (no outbound
+ * requests or tracking), no form/input (no phishing; the sole exception
+ * is GFM task-list checkboxes, which the hook below restricts), no style
+ * (no CSS overlay spoofing), no data-* attributes. Links open in a new
+ * tab with noopener; everything DOMPurify does not allow is stripped.
+ */
+const ALLOWED_TAGS = [
+  'a', 'abbr', 'b', 'bdi', 'blockquote', 'br', 'caption', 'code', 'dd', 'del',
+  'details', 'div', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'hr', 'i', 'input', 'kbd', 'li', 'mark', 'ol', 'p', 'pre', 'q', 's', 'samp',
+  'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table', 'tbody',
+  'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul',
+];
+const ALLOWED_ATTR = ['href', 'title', 'type', 'checked', 'disabled'];
+
+DOMPurify.addHook('afterSanitizeAttributes', node => {
+  if (node.tagName === 'A' && node.getAttribute('href')) {
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noopener noreferrer');
+  }
+  // GFM task lists render as <input type="checkbox" disabled>; any other
+  // input (text fields, buttons, ...) is dropped.
+  if (node.tagName === 'INPUT' && node.getAttribute('type') !== 'checkbox') {
+    node.remove();
+  }
+});
+
 /** Render markdown body to sanitized HTML (marked + DOMPurify). */
 export function renderMarkdown(body) {
   const html = marked.parse(String(body ?? ''), { async: false, gfm: true, breaks: true });
-  return DOMPurify.sanitize(html);
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS,
+    ALLOWED_ATTR,
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+    ALLOW_UNKNOWN_PROTOCOLS: false,
+  });
 }
 
 /** Card detail view: metadata + sanitized markdown preview of the body. */

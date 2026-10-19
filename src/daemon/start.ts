@@ -13,10 +13,11 @@
  * All of it shuts down gracefully via POST /api/shutdown.
  */
 
-import { mkdirSync } from 'fs';
+import { chmodSync, mkdirSync, rmSync } from 'fs';
 import type { Server } from 'node:http';
 import type { DatabaseSync } from 'node:sqlite';
 import { serve, type ServerType } from '@hono/node-server';
+import { AdminPasswordStore } from './admin-password.js';
 import { ActivityLog } from '../db/activity.js';
 import { CardStore } from '../db/cards.js';
 import { openDatabase } from '../db/database.js';
@@ -33,6 +34,7 @@ import {
   getLanceDbPath,
   getMemhubHome,
   getModelsDir,
+  getSetupCodePath,
   getTokenPath,
 } from '../paths.js';
 import { isModuleNotFound, SEMANTIC_INSTALL_HINT } from '../semantic-stack.js';
@@ -42,6 +44,7 @@ import { LanceVectorIndex } from '../storage/vector-index.js';
 import { getVersion } from '../version.js';
 import { IndexingWorker } from '../worker/indexer-worker.js';
 import { JobTimers } from '../worker/timers.js';
+import { ensureSetupCodeFile } from './setup-code.js';
 import { resolveToken } from './token.js';
 
 /** Error thrown when the port is already in use. */
@@ -119,12 +122,48 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   const home = options.home ?? getMemhubHome();
   const port = options.port ?? DEFAULT_PORT;
   const host = options.host ?? getBindHost();
-  mkdirSync(home, { recursive: true });
+  // The home directory holds the token, setup code, database and logs:
+  // tighten it to owner-only (best effort — an existing directory the
+  // daemon cannot chmod, e.g. a container volume, is left as-is).
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(home, 0o700);
+  } catch {
+    // best-effort hardening only
+  }
 
   const token = resolveToken(getTokenPath(home));
   const db = openDatabase(getDatabasePath(home));
   const workerOptions = options.worker ?? createDefaultWorkerContext(home);
   const retryDelayMs = workerOptions.retryDelayMs ?? WORKER_START_RETRY_MS;
+
+  // Fresh deployment: mint the one-time setup code the very first login
+  // must present to set the admin password (proof of server access, so a
+  // remote attacker cannot claim an uninitialized server). Supplied to
+  // the app lazily: clearing the password (memhub reset-password) while
+  // the daemon runs re-enables setup without a restart.
+  const setupCodePath = getSetupCodePath(home);
+  const adminPasswords = new AdminPasswordStore(db);
+  let setupCodePrinted = false;
+  const printSetupCode = (code: string): void => {
+    if (setupCodePrinted) return;
+    setupCodePrinted = true;
+    console.log(`memhub: first-run setup code: ${code}`);
+    console.log(`memhub: (also stored at ${setupCodePath}; required to set the admin password)`);
+  };
+  const getSetupCode = (): string | null => {
+    if (adminPasswords.get() !== null) return null;
+    try {
+      const code = ensureSetupCodeFile(setupCodePath);
+      printSetupCode(code);
+      return code;
+    } catch (error) {
+      console.error('memhub: failed to mint the setup code:', errorMessage(error));
+      return null;
+    }
+  };
+  // Mint eagerly on a fresh home so the operator sees the code in the logs.
+  getSetupCode();
 
   let settlePort!: (port: number) => void;
   let rejectPort!: (error: Error) => void;
@@ -168,6 +207,17 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     },
     semantic,
     webDist: options.webDist === null ? undefined : (options.webDist ?? defaultWebDist()),
+    getSetupCode,
+    setupCodePath,
+    onSetupComplete: () => {
+      try {
+        rmSync(setupCodePath);
+      } catch (error) {
+        console.error('memhub: failed to remove the setup code file:', error);
+      }
+      // A later password reset mints a fresh code — print it again then.
+      setupCodePrinted = false;
+    },
   });
   // `overrideGlobalObjects: false` keeps the native global Request/Response:
   // the Hono shim classes break `response instanceof Response` checks inside

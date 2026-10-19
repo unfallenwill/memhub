@@ -6,7 +6,7 @@
  * MEMHUB_TOKEN environment variable always win over the file.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 import { TOKEN_ENV } from '../daemon/token.js';
 import { getCredentialsPath, getMemhubHome } from '../paths.js';
@@ -66,6 +66,9 @@ export function writeCredentials(home: string, credentials: StoredCredentials): 
     encoding: 'utf-8',
     mode: 0o600,
   });
+  // writeFileSync only applies the mode when creating: re-assert it so a
+  // rewrite never leaves a previously loosened mode in place.
+  chmodSync(path, 0o600);
 }
 
 /** Delete the credentials file; returns whether it existed. */

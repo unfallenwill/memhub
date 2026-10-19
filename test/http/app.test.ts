@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Hono } from 'hono';
 import { createApp } from '../../src/http/app.js';
+import { DeviceTokenStore, tokenHash } from '../../src/db/device-tokens.js';
 import { SemanticSearch } from '../../src/services/semantic-search.js';
 import {
   createTestDb,
@@ -12,6 +13,9 @@ import {
 } from '../test-utils.js';
 
 const TOKEN = 'test-token';
+
+/** Loopback env: the Host check fails closed without socket info. */
+const LOCAL_ENV = { incoming: { socket: { remoteAddress: '127.0.0.1' } } };
 
 describe('HTTP app', () => {
   let t: TestDb;
@@ -54,7 +58,7 @@ describe('HTTP app', () => {
       host: '127.0.0.1:7800',
       ...((init.headers as Record<string, string>) ?? {}),
     };
-    return app().request(path, { ...init, headers });
+    return app().request(path, { ...init, headers }, LOCAL_ENV);
   }
 
   /** Like request(), but with extra allowed hosts injected (cloud setup). */
@@ -75,7 +79,7 @@ describe('HTTP app', () => {
       startedAt: Date.now(),
       requestShutdown,
       allowedHosts,
-    }).request(path, { ...init, headers });
+    }).request(path, { ...init, headers }, LOCAL_ENV);
   }
 
   beforeEach(() => {
@@ -101,6 +105,97 @@ describe('HTTP app', () => {
         headers: { host: '' },
       });
       expect(response.status).toBe(403);
+    });
+
+    it('rejects local Host headers coming from non-local connections', async () => {
+      const remote = (address: string) => ({ incoming: { socket: { remoteAddress: address } } });
+      for (const address of ['203.0.113.9', '10.0.0.3', '::ffff:192.168.1.5']) {
+        const response = await app().request(
+          '/healthz',
+          { headers: { host: 'localhost:7800' } },
+          remote(address)
+        );
+        expect(response.status, address).toBe(403);
+      }
+      // The IPv6 literal form is covered by the same rule.
+      const v6 = await app().request(
+        '/healthz',
+        { headers: { host: '[::1]:7800' } },
+        remote('203.0.113.9')
+      );
+      expect(v6.status).toBe(403);
+    });
+
+    it('accepts local Host headers from loopback connections', async () => {
+      const remote = (address: string) => ({ incoming: { socket: { remoteAddress: address } } });
+      for (const address of ['127.0.0.1', '127.9.8.7', '::1', '::ffff:127.0.0.1']) {
+        const response = await app().request(
+          '/healthz',
+          { headers: { host: 'localhost:7800' } },
+          remote(address)
+        );
+        expect(response.status, address).toBe(200);
+      }
+    });
+
+    it('accepts configured hosts regardless of the connection origin', async () => {
+      const remote = { incoming: { socket: { remoteAddress: '203.0.113.9' } } };
+      const response = await createApp({
+        db,
+        token: TOKEN,
+        version: '1.2.3-test',
+        pid: 4242,
+        startedAt: Date.now(),
+        requestShutdown,
+        allowedHosts: ['memhub.example.com'],
+      }).request('/healthz', { headers: { host: 'memhub.example.com' } }, remote);
+      expect(response.status).toBe(200);
+    });
+
+    it('fails closed: a local Host header without socket info is rejected', async () => {
+      // In-process call without env — no peer address available. The
+      // check must fail closed rather than treat the request as local.
+      const response = await app().request('/healthz', {
+        headers: { host: '127.0.0.1:7800' },
+      });
+      expect(response.status).toBe(403);
+    });
+
+    it('caps request bodies on the unauthenticated device flow (413)', async () => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`{"pad":"${'x'.repeat(100_000)}"}`));
+          controller.close();
+        },
+      });
+      const response = await app().request(
+        '/oauth/device/code',
+        {
+          method: 'POST',
+          headers: { host: '127.0.0.1:7800', 'content-type': 'application/json' },
+          body: stream,
+          // Required by undici for streaming request bodies.
+          duplex: 'half',
+        } as RequestInit,
+        LOCAL_ENV
+      );
+      expect(response.status).toBe(413);
+      const body = (await response.json()) as { error: string; error_description: string };
+      expect(body.error).toBe('invalid_request');
+    });
+
+    it('caps request bodies on authenticated /api routes (413)', async () => {
+      const response = await request('/api/cards', {
+        method: 'POST',
+        headers: {
+          'x-memhub-token': TOKEN,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ title: 't', body: 'x'.repeat(3 * 1024 * 1024), type: 'fact' }),
+      });
+      expect(response.status).toBe(413);
+      const body = (await response.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('payload_too_large');
     });
 
     it('requires X-Memhub-Token on /api/* routes', async () => {
@@ -566,7 +661,7 @@ describe('HTTP app', () => {
         host: '127.0.0.1:7800',
         ...((init.headers as Record<string, string>) ?? {}),
       };
-      return appWithSemantic(semantic).request(path, { ...init, headers });
+      return appWithSemantic(semantic).request(path, { ...init, headers }, LOCAL_ENV);
     }
 
     beforeEach(() => {
@@ -681,13 +776,21 @@ describe('HTTP app', () => {
 
     it('healthz reports readiness from the injected semantic index', async () => {
       const notReady = (await (
-        await appWithSemantic(semantic).request('/healthz', { headers: { host: 'localhost' } })
+        await appWithSemantic(semantic).request(
+          '/healthz',
+          { headers: { host: 'localhost' } },
+          LOCAL_ENV
+        )
       ).json()) as { index: { ready: boolean } };
       expect(notReady.index.ready).toBe(false);
 
       semantic.setReady(true);
       const ready = (await (
-        await appWithSemantic(semantic).request('/healthz', { headers: { host: 'localhost' } })
+        await appWithSemantic(semantic).request(
+          '/healthz',
+          { headers: { host: 'localhost' } },
+          LOCAL_ENV
+        )
       ).json()) as { index: { ready: boolean } };
       expect(ready.index.ready).toBe(true);
     });
@@ -751,6 +854,20 @@ describe('HTTP app', () => {
     it('requires the token', async () => {
       const response = await request('/api/shutdown', { method: 'POST' });
       expect(response.status).toBe(401);
+    });
+
+    it('rejects device tokens: shutdown is daemon-token only', async () => {
+      const deviceTokens = new DeviceTokenStore(db);
+      const deviceToken = 'd'.repeat(64);
+      deviceTokens.create(tokenHash(deviceToken), 'test-device');
+      const response = await request('/api/shutdown', {
+        method: 'POST',
+        headers: { 'x-memhub-token': deviceToken },
+      });
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('shutdown_forbidden');
+      expect(requestShutdown).not.toHaveBeenCalled();
     });
   });
 

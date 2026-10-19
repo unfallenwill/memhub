@@ -75,6 +75,17 @@ describe('credentials store', () => {
     expect(readCredentials(home)).toBeNull();
   });
 
+  it('re-tightens the mode when rewriting a loosened credentials file', () => {
+    const path = getCredentialsPath(home);
+    writeCredentials(home, { version: 1, url: 'https://x.example', token: 'a'.repeat(64) });
+    if (process.platform !== 'win32') {
+      chmodSync(path, 0o644);
+      writeCredentials(home, { version: 1, url: 'https://y.example', token: 'b'.repeat(64) });
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
+    expect(readCredentials(home)?.url).toBe('https://y.example');
+  });
+
   it('treats malformed credentials files as absent', () => {
     mkdirSync(home, { recursive: true });
     writeFileSync(getCredentialsPath(home), 'not json', 'utf-8');

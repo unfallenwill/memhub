@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -40,6 +48,16 @@ describe('token', () => {
     writeFileSync(path, '   \n');
     const token = loadOrCreateToken(path);
     expect(token).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('re-tightens the mode when regenerating into a pre-existing file', () => {
+    const path = tokenPath();
+    if (process.platform !== 'win32') {
+      writeFileSync(path, '', { mode: 0o644 });
+      chmodSync(path, 0o644);
+      loadOrCreateToken(path);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('readToken returns null when the file is missing or empty', () => {

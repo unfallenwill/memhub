@@ -31,6 +31,11 @@ export function invalidHost(): ApiError {
   return new ApiError(403, 'invalid_host', 'Requests must target localhost or 127.0.0.1');
 }
 
+/** 403 - the authenticated credential may not perform this action. */
+export function forbidden(code: string, message: string): ApiError {
+  return new ApiError(403, code, message);
+}
+
 /** 404 - unknown route or missing resource. */
 export function notFound(message = 'Not found'): ApiError {
   return new ApiError(404, 'not_found', message);

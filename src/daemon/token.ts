@@ -8,7 +8,7 @@
  */
 
 import { randomBytes } from 'crypto';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'fs';
 
 /** Environment variable with a fixed API token (cloud/container deployments). */
 export const TOKEN_ENV = 'MEMHUB_TOKEN';
@@ -24,6 +24,9 @@ export function loadOrCreateToken(tokenPath: string): string {
   }
   const token = randomBytes(32).toString('hex');
   writeFileSync(tokenPath, token, { encoding: 'utf-8', mode: 0o600 });
+  // writeFileSync only applies the mode when creating: re-assert it when
+  // regenerating into a pre-existing (e.g. emptied) file with a loose mode.
+  chmodSync(tokenPath, 0o600);
   return token;
 }
 

@@ -86,6 +86,15 @@ export function getTokenPath(home: string = getMemhubHome()): string {
   return join(home, 'token');
 }
 
+/**
+ * Path of the first-run setup code file. The code proves access to the
+ * server's filesystem when the very first login sets the admin password;
+ * without it anyone could claim a fresh remote deployment.
+ */
+export function getSetupCodePath(home: string = getMemhubHome()): string {
+  return join(home, 'setup-code');
+}
+
 /** Path of the daemon log directory inside a MemHub home directory. */
 export function getLogsDir(home: string = getMemhubHome()): string {
   return join(home, 'logs');

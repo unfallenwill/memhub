@@ -96,6 +96,10 @@ export async function runLoginCommand(options: LoginCommandOptions): Promise<num
     console.log(
       'The next step will SET the administrator password — make sure you own this server.'
     );
+    console.log(
+      'If the login page asks for a setup code, read it on the server: the daemon prints it ' +
+        'at startup and stores it in the setup-code file inside its data directory.'
+    );
   }
   console.log('');
   console.log(`Your code: ${grant.user_code}`);

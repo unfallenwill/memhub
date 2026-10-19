@@ -27,9 +27,11 @@ import {
   SemanticStackNotInstalledError,
 } from '../services/search-service.js';
 import type { SemanticSearch } from '../services/semantic-search.js';
+import { bodySizeLimit } from './body-limit.js';
 import { registerDeviceAuthRoutes } from './device-auth.js';
 import {
   ApiError,
+  forbidden,
   indexNotReady,
   invalidHost,
   invalidRequest,
@@ -38,6 +40,7 @@ import {
   unauthorized,
   webUiNotBuilt,
 } from './errors.js';
+import { isLocalConnection } from './request-info.js';
 import { StaticSite, staticNotFound, staticResponse } from './static.js';
 
 /** Dependencies injected into the app (keeps it testable). */
@@ -79,6 +82,12 @@ export interface AppDeps {
   readonly injectWebToken?: boolean | undefined;
   /** Clock override for the device-flow endpoints (tests). */
   readonly authNow?: (() => number) | undefined;
+  /** Lazily supplies the first-run setup code; null/omitted = setup refused. */
+  readonly getSetupCode?: (() => string | null) | undefined;
+  /** Path of the setup code file on the server (shown on the login page). */
+  readonly setupCodePath?: string | undefined;
+  /** Called after the admin password was set through the setup flow. */
+  readonly onSetupComplete?: (() => void) | undefined;
 }
 
 const createCardSchema = z.object({
@@ -115,6 +124,12 @@ const invalidateSchema = z
   })
   .default({});
 
+/** Body cap for the device-flow endpoints (form/JSON, a few hundred bytes). */
+export const OAUTH_BODY_LIMIT_BYTES = 4096;
+
+/** Body cap for /api/* (a 200k-char card body can reach ~1.2MB JSON-escaped). */
+export const API_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+
 /** Build the MemHub HTTP application. */
 export function createApp(deps: AppDeps): Hono {
   const events = new EventStore(deps.db);
@@ -130,16 +145,41 @@ export function createApp(deps: AppDeps): Hono {
 
   const app = new Hono();
 
-  // DNS rebinding defense: only local Host headers are accepted, plus
-  // any explicitly allowed hosts (cloud deployments).
+  // DNS rebinding defense / remote perimeter: local Host headers
+  // (localhost, 127.0.0.1, [::1]) are only accepted when the request
+  // actually originates from this machine; anything else must match an
+  // explicitly allowed host (MEMHUB_ALLOWED_HOSTS).
   const allowedHosts = deps.allowedHosts ?? [];
   app.use('*', async (c, next) => {
     const host = c.req.header('host');
-    if (!host || !isAllowedHost(host, allowedHosts)) {
+    if (!host || !isAllowedHost(host, allowedHosts, isLocalConnection(c))) {
       throw invalidHost();
     }
     await next();
   });
+
+  // Request body caps (apply to streamed/chunked bodies too, unlike a
+  // Content-Length check). The device-flow endpoints only ever receive a
+  // few hundred bytes; API bodies are bounded by the card schema (a
+  // 200k-char body can grow to ~1.2MB as JSON unicode escapes).
+  app.use(
+    '/oauth/*',
+    bodySizeLimit(OAUTH_BODY_LIMIT_BYTES, () =>
+      Response.json(
+        { error: 'invalid_request', error_description: 'request body too large' },
+        { status: 413 }
+      )
+    )
+  );
+  app.use(
+    '/api/*',
+    bodySizeLimit(API_BODY_LIMIT_BYTES, () =>
+      Response.json(
+        { error: { code: 'payload_too_large', message: 'Request body exceeds the size limit' } },
+        { status: 413 }
+      )
+    )
+  );
 
   // Token auth for everything under /api/*: the daemon's own token
   // (file/env) or any active device-flow token.
@@ -202,6 +242,15 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.post('/api/shutdown', c => {
+    // Server administration, not a web/CLI session action: only the
+    // daemon's own token may stop it, never a device-flow token.
+    const provided = c.req.header('x-memhub-token') ?? '';
+    if (!tokensEqual(provided, deps.token)) {
+      throw forbidden(
+        'shutdown_forbidden',
+        'Shutting the daemon down requires the daemon token, not a device token'
+      );
+    }
     deps.requestShutdown();
     return c.json({ ok: true });
   });
@@ -342,6 +391,9 @@ export function createApp(deps: AppDeps): Hono {
     legacyToken: deps.token,
     webDist: deps.webDist,
     now: deps.authNow,
+    getSetupCode: deps.getSetupCode,
+    setupCodePath: deps.setupCodePath,
+    onSetupComplete: deps.onSetupComplete,
   });
 
   // Web UI static hosting (registered last so /api routes keep priority).
@@ -350,12 +402,16 @@ export function createApp(deps: AppDeps): Hono {
   // only — remote deployments rely on device tokens from memhub login).
   if (deps.webDist !== undefined) {
     const site = new StaticSite(deps.webDist);
-    app.get('/', () => {
+    const indexResponse = (): Response => {
       const index = site.index(deps.injectWebToken === false ? '' : deps.token);
       if (index === null) throw webUiNotBuilt();
       return staticResponse(index);
-    });
+    };
+    app.get('/', indexResponse);
     app.get('*', c => {
+      // Direct /index.html requests get the token-injected page too
+      // (same headers/CSP as /), never the raw placeholder file.
+      if (c.req.path === '/index.html') return indexResponse();
       const file = site.file(c.req.path);
       if (file === null) throw staticNotFound(c.req.path);
       return staticResponse(file);
@@ -383,11 +439,12 @@ function isIndexReady(
 }
 
 /**
- * Whether a Host header value is allowed: the local defaults plus any
+ * Whether a Host header value is allowed: the local defaults (only for
+ * connections that actually originate from this machine) plus any
  * configured extra hosts (case-insensitive, ports ignored). A "*" entry
  * in the extras accepts everything.
  */
-function isAllowedHost(host: string, extra: readonly string[]): boolean {
+function isAllowedHost(host: string, extra: readonly string[], localConnection: boolean): boolean {
   if (extra.includes('*')) return true;
   let hostname = host.trim().toLowerCase();
   if (hostname.startsWith('[')) {
@@ -395,13 +452,16 @@ function isAllowedHost(host: string, extra: readonly string[]): boolean {
     const end = hostname.indexOf(']');
     if (end === -1) return false;
     hostname = hostname.slice(0, end + 1);
-    return hostname === '[::1]' || extra.some(entry => entry.toLowerCase() === hostname);
+    return (
+      (localConnection && hostname === '[::1]') ||
+      extra.some(entry => entry.toLowerCase() === hostname)
+    );
   }
   const colon = hostname.lastIndexOf(':');
   if (colon !== -1) {
     hostname = hostname.slice(0, colon);
   }
-  if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+  if (localConnection && (hostname === 'localhost' || hostname === '127.0.0.1')) return true;
   return extra.some(entry => entry.toLowerCase() === hostname);
 }
 
