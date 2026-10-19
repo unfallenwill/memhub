@@ -5,6 +5,15 @@
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./db": "./dist/src/db/index.js",
+    "./http": "./dist/src/http/index.js",
+    "./daemon": "./dist/src/daemon/index.js",
+    "./package.json": "./package.json",
+    "./dist/*": "./dist/*"
+  },
+  "sideEffects": false,
   "files": [
     "dist/src",
     "web/dist"
@@ -20,8 +29,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage --pool forks --poolOptions.forks.singleFork",
-    "lint": "eslint src test --ext .ts",
+    "lint": "eslint src test --ext .ts && node scripts/check-layers.mjs",
     "lint:fix": "eslint src test --ext .ts --fix",
+    "layers": "node scripts/check-layers.mjs",
+    "layers:strict": "node scripts/check-layers.mjs --strict",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"docs/**/*.md\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"docs/**/*.md\"",
     "typecheck": "tsc --noEmit --project tsconfig.json",

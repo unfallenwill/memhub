@@ -212,14 +212,14 @@ How it works:
 
 ## Environment Variables
 
-| Variable               | Default      | Meaning                                                                                    |
-| ---------------------- | ------------ | ------------------------------------------------------------------------------------------ |
-| `MEMHUB_HOME`          | `~/.memhub`  | Data directory (database, token, logs, vector index, model cache)                          |
-| `MEMHUB_HOST`          | `127.0.0.1`  | Address the daemon binds. `0.0.0.0` in containers/cloud                                    |
-| `MEMHUB_PORT`          | `7800`       | Default port for the daemon and all CLI commands (`--port` overrides)                      |
-| `MEMHUB_TOKEN`         | (token file) | Fixed API token; wins over `<home>/token` and is never written to disk                     |
-| `MEMHUB_ALLOWED_HOSTS` | (local only) | Extra Host header values accepted (comma-separated, ports ignored; `*` accepts everything) |
-| `MEMHUB_WEB_DIST`      | (auto)       | Directory of the built web UI                                                              |
+| Variable               | Default      | Meaning                                                                                                                                                                                       |
+| ---------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEMHUB_HOME`          | `~/.memhub`  | Data directory (database, token, logs, vector index, model cache)                                                                                                                             |
+| `MEMHUB_HOST`          | `127.0.0.1`  | Address the daemon binds. `0.0.0.0` in containers/cloud                                                                                                                                       |
+| `MEMHUB_PORT`          | `7800`       | Default port for the daemon and all CLI commands (`--port` overrides). An invalid value is rejected with `invalid MEMHUB_PORT value: <value>` instead of silently falling back to the default |
+| `MEMHUB_TOKEN`         | (token file) | Fixed API token; wins over `<home>/token` and is never written to disk                                                                                                                        |
+| `MEMHUB_ALLOWED_HOSTS` | (local only) | Extra Host header values accepted (comma-separated, ports ignored; `*` accepts everything)                                                                                                    |
+| `MEMHUB_WEB_DIST`      | (auto)       | Directory of the built web UI                                                                                                                                                                 |
 
 By default the daemon keeps its local threat model: loopback bind, local-only Host headers, generated token. The other variables are opt-in for cloud/container deployments.
 

@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createDbContext } from '../../src/db/context.js';
 import { WorkerStateStore, WORKER_STATE_KEYS } from '../../src/db/worker-state.js';
+import { createRuntimeContext } from '../../src/runtime/context.js';
 import { cardEmbeddingText } from '../../src/worker/rebuild.js';
 import { IndexingWorker } from '../../src/worker/indexer-worker.js';
 import {
@@ -16,7 +18,7 @@ describe('IndexingWorker', () => {
     const embedder = new FakeEmbedder({ failFor: options.failFor });
     const vectors = new FakeVectorStore();
     const worker = new IndexingWorker({
-      db: t.db,
+      repositories: createDbContext(t.db),
       embedder,
       vectors,
       embedBatchSize: options.embedBatchSize,
@@ -73,13 +75,21 @@ describe('IndexingWorker', () => {
     const vectors = new FakeVectorStore();
     try {
       t.cards.createCard(cardInput({ title: 'One', body: 'b1' }));
-      const worker1 = new IndexingWorker({ db: t.db, embedder, vectors });
+      const worker1 = new IndexingWorker({
+        repositories: createDbContext(t.db),
+        embedder,
+        vectors,
+      });
       await worker1.tick();
       expect(embedder.embedCalls).toHaveLength(1);
 
       // A brand new card arrives; a restarted worker must only process it.
       t.cards.createCard(cardInput({ title: 'Two', body: 'b2' }));
-      const worker2 = new IndexingWorker({ db: t.db, embedder, vectors });
+      const worker2 = new IndexingWorker({
+        repositories: createDbContext(t.db),
+        embedder,
+        vectors,
+      });
       await worker2.tick();
 
       expect(embedder.embedCalls).toHaveLength(2);
@@ -132,7 +142,7 @@ describe('IndexingWorker', () => {
     const t = createTestDb();
     const embedder = new FakeEmbedder();
     const vectors = new FakeVectorStore();
-    const worker = new IndexingWorker({ db: t.db, embedder, vectors });
+    const worker = new IndexingWorker({ repositories: createDbContext(t.db), embedder, vectors });
     try {
       t.cards.createCard(cardInput({ title: 'T', body: 'B' }));
       await worker.tick();
@@ -239,7 +249,7 @@ describe('IndexingWorker', () => {
     const t = createTestDb();
     const embedder = new FakeEmbedder();
     const vectors = new FakeVectorStore();
-    const worker = new IndexingWorker({ db: t.db, embedder, vectors });
+    const worker = new IndexingWorker({ repositories: createDbContext(t.db), embedder, vectors });
     try {
       t.cards.createCard(cardInput({ title: 'T', body: 'B' }));
       await worker.start();
@@ -269,7 +279,7 @@ describe('IndexingWorker', () => {
       const state = new WorkerStateStore(t.db);
       state.set(WORKER_STATE_KEYS.model, 'old-model');
 
-      const worker = new IndexingWorker({ db: t.db, embedder, vectors });
+      const worker = new IndexingWorker({ repositories: createDbContext(t.db), embedder, vectors });
       await worker.start();
       await worker.stop();
 
@@ -297,12 +307,42 @@ describe('IndexingWorker', () => {
       t.cards.createCard(cardInput({ title: 'T', body: 'B' }));
       t.db.prepare('UPDATE cards SET indexed_at = ? WHERE id = 1').run('2024-01-01T00:00:00Z');
 
-      const worker = new IndexingWorker({ db: t.db, embedder, vectors });
+      const worker = new IndexingWorker({ repositories: createDbContext(t.db), embedder, vectors });
       await worker.start();
       await worker.stop();
 
       expect(vectors.clearCount).toBe(0);
       expect(vectors.upserts).toHaveLength(0);
+    } finally {
+      t.close();
+    }
+  });
+
+  it('works on the injected repositories instead of building its own', async () => {
+    // The production path injects the stores of the composition root, so
+    // the worker shares one store graph with the HTTP app.
+    const t = createTestDb();
+    const embedder = new FakeEmbedder();
+    const vectors = new FakeVectorStore();
+    try {
+      const context = createRuntimeContext({ db: t.db, embedder, vectors });
+      context.cards.createCard(cardInput({ title: 'Injected', body: 'Body' }));
+
+      const getCard = vi.spyOn(context.cards, 'getCard');
+      const setIndexedAt = vi.spyOn(context.cards, 'setIndexedAt');
+      const setLastEventId = vi.spyOn(context.workerState, 'setLastEventId');
+
+      const worker = new IndexingWorker({
+        embedder,
+        vectors,
+        repositories: context,
+      });
+      expect(await worker.tick()).toBe(1);
+
+      expect(getCard).toHaveBeenCalledWith(1);
+      expect(setIndexedAt).toHaveBeenCalled();
+      expect(setLastEventId).toHaveBeenCalledWith(1);
+      expect(context.cards.getCard(1)?.indexedAt).not.toBeNull();
     } finally {
       t.close();
     }

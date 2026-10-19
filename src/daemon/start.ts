@@ -11,49 +11,49 @@
  *   cleanup) that only enqueue events for the worker.
  *
  * All of it shuts down gracefully via POST /api/shutdown.
+ *
+ * This module is the orchestration layer only: the configuration is
+ * resolved in ./config.ts, the socket is bound in ./server.ts, the
+ * worker startup strategy lives in ./worker-bootstrap.ts and the object
+ * graph of the process is built by the composition root
+ * (src/runtime/context.ts) - the app, the worker and the timers all work
+ * on the very same store instances.
  */
 
 import { chmodSync, mkdirSync, rmSync } from 'fs';
-import type { Server } from 'node:http';
-import type { DatabaseSync } from 'node:sqlite';
-import { serve, type ServerType } from '@hono/node-server';
-import { AdminPasswordStore } from './admin-password.js';
-import { ActivityLog } from '../db/activity.js';
-import { CardStore } from '../db/cards.js';
-import { openDatabase } from '../db/database.js';
-import { EventStore } from '../db/events.js';
-import type { EmbeddingProvider } from '../embedding/embedder.js';
-import { TransformersEmbedder } from '../embedding/transformers-embedder.js';
-import { createApp } from '../http/app.js';
-import { defaultWebDist } from '../http/static.js';
 import {
-  DEFAULT_PORT,
   getAllowedHosts,
-  getBindHost,
   getDatabasePath,
   getLanceDbPath,
-  getMemhubHome,
   getModelsDir,
   getSetupCodePath,
   getTokenPath,
-} from '../paths.js';
-import { isModuleNotFound, SEMANTIC_INSTALL_HINT } from '../semantic-stack.js';
+} from '../config/paths.js';
+import { openDatabase } from '../db/database.js';
+import type { EmbeddingProvider } from '../embedding/embedder.js';
+import { TransformersEmbedder } from '../embedding/transformers-embedder.js';
+import { createApp } from '../http/app.js';
+import { createRuntimeContext, type RuntimeContext } from '../runtime/context.js';
+import { logDaemonError } from '../core/util/log.js';
 import { SemanticSearch } from '../services/semantic-search.js';
 import type { CardVectorStore } from '../storage/vector-index.js';
 import { LanceVectorIndex } from '../storage/vector-index.js';
 import { getVersion } from '../version.js';
 import { IndexingWorker } from '../worker/indexer-worker.js';
 import { JobTimers } from '../worker/timers.js';
+import { resolveDaemonConfig } from './config.js';
+import { startHttpServer, type HttpServerHandle } from './server.js';
 import { ensureSetupCodeFile } from './setup-code.js';
 import { resolveToken } from './token.js';
+import {
+  startWorkerInBackground,
+  type IndexingWorkerHandle,
+  type SemanticReadiness,
+} from './worker-bootstrap.js';
 
-/** Error thrown when the port is already in use. */
-export class PortInUseError extends Error {
-  constructor(readonly port: number) {
-    super(`port ${port} is already in use`);
-    this.name = 'PortInUseError';
-  }
-}
+// The port error is defined next to the code that raises it, but the
+// daemon has always been its public home (the CLI imports it there).
+export { PortInUseError } from './server.js';
 
 /** A running MemHub daemon. */
 export interface DaemonHandle {
@@ -83,7 +83,7 @@ export interface DaemonWorkerOptions {
 export interface DaemonOptions {
   /** Data directory. Defaults to the resolved MemHub home. */
   readonly home?: string | undefined;
-  /** Port to bind. 0 picks a free port. Defaults to 7800. */
+  /** Port to bind. 0 picks a free port. Defaults to MEMHUB_PORT or 7800. */
   readonly port?: number | undefined;
   /**
    * TCP address to bind. Defaults to the MEMHUB_HOST environment
@@ -101,6 +101,11 @@ export interface DaemonOptions {
    * Transformers.js embedder and a LanceDB store under the MemHub home.
    */
   readonly worker?: DaemonWorkerOptions | undefined;
+  /**
+   * The indexing worker to run. Defaults to an IndexingWorker built from
+   * the worker options; tests inject a fake (e.g. one whose stop() fails).
+   */
+  readonly indexer?: IndexingWorkerHandle | undefined;
 }
 
 /** How often a failed worker startup (e.g. model download) is retried. */
@@ -108,9 +113,13 @@ export const WORKER_START_RETRY_MS = 60_000;
 
 /** Build the production worker context (no I/O happens at construction). */
 export function createDefaultWorkerContext(home: string): DaemonWorkerOptions {
+  const embedder = new TransformersEmbedder({ cacheDir: getModelsDir(home) });
   return {
-    embedder: new TransformersEmbedder({ cacheDir: getModelsDir(home) }),
-    vectors: new LanceVectorIndex(getLanceDbPath(home)),
+    embedder,
+    // The store validates the dimensionality of every write, so a
+    // provider that produces vectors of a different length cannot
+    // silently corrupt the LanceDB table schema.
+    vectors: new LanceVectorIndex(getLanceDbPath(home), { dimensions: embedder.dimensions }),
   };
 }
 
@@ -119,9 +128,7 @@ export function createDefaultWorkerContext(home: string): DaemonWorkerOptions {
  * Rejects with PortInUseError when the port cannot be bound.
  */
 export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHandle> {
-  const home = options.home ?? getMemhubHome();
-  const port = options.port ?? DEFAULT_PORT;
-  const host = options.host ?? getBindHost();
+  const { home, port, host, webDist } = resolveDaemonConfig(options);
   // The home directory holds the token, setup code, database and logs:
   // tighten it to owner-only (best effort — an existing directory the
   // daemon cannot chmod, e.g. a container volume, is left as-is).
@@ -137,13 +144,22 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   const workerOptions = options.worker ?? createDefaultWorkerContext(home);
   const retryDelayMs = workerOptions.retryDelayMs ?? WORKER_START_RETRY_MS;
 
+  // The composition root: one store graph for the whole process. The
+  // app, the indexing worker, the job timers and the semantic search all
+  // work on these very instances.
+  const context = createRuntimeContext({
+    db,
+    embedder: workerOptions.embedder,
+    vectors: workerOptions.vectors,
+  });
+
   // Fresh deployment: mint the one-time setup code the very first login
   // must present to set the admin password (proof of server access, so a
   // remote attacker cannot claim an uninitialized server). Supplied to
   // the app lazily: clearing the password (memhub reset-password) while
   // the daemon runs re-enables setup without a restart.
   const setupCodePath = getSetupCodePath(home);
-  const adminPasswords = new AdminPasswordStore(db);
+  const adminPasswords = context.adminPassword;
   let setupCodePrinted = false;
   const printSetupCode = (code: string): void => {
     if (setupCodePrinted) return;
@@ -158,39 +174,32 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       printSetupCode(code);
       return code;
     } catch (error) {
-      console.error('memhub: failed to mint the setup code:', errorMessage(error));
+      logDaemonError('failed to mint the setup code', error);
       return null;
     }
   };
   // Mint eagerly on a fresh home so the operator sees the code in the logs.
   getSetupCode();
 
-  let settlePort!: (port: number) => void;
-  let rejectPort!: (error: Error) => void;
-  const ready = new Promise<number>((resolve, reject) => {
-    settlePort = resolve;
-    rejectPort = reject;
-  });
-
   // Teardown is assigned after the server is up; `closing` guards against
   // double-close (e.g. shutdown request + signal at the same time).
   let closing = false;
   let teardown: () => Promise<void> = async () => {};
 
-  const worker = new IndexingWorker({
-    db,
-    embedder: workerOptions.embedder,
-    vectors: workerOptions.vectors,
-  });
-  const semantic = new SemanticSearch({
-    embedder: workerOptions.embedder,
-    vectors: workerOptions.vectors,
-    cards: createCardStore(db),
-  });
-  const timers = new JobTimers(db);
+  const worker: IndexingWorkerHandle =
+    options.indexer ??
+    new IndexingWorker({
+      embedder: workerOptions.embedder,
+      vectors: workerOptions.vectors,
+      // The context satisfies the repository bundle of the worker layer:
+      // the worker works on the very same stores as the app.
+      repositories: context,
+    });
+  const semantic = semanticReadiness(context);
+  const timers = new JobTimers(context);
 
   const app = createApp({
-    db,
+    context,
     token,
     version: getVersion(),
     pid: process.pid,
@@ -205,45 +214,29 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
         void teardown();
       }, SHUTDOWN_FLUSH_DELAY_MS);
     },
-    semantic,
-    webDist: options.webDist === null ? undefined : (options.webDist ?? defaultWebDist()),
+    webDist,
     getSetupCode,
     setupCodePath,
     onSetupComplete: () => {
       try {
         rmSync(setupCodePath);
       } catch (error) {
-        console.error('memhub: failed to remove the setup code file:', error);
+        logDaemonError('failed to remove the setup code file', error);
       }
       // A later password reset mints a fresh code — print it again then.
       setupCodePrinted = false;
     },
   });
-  // `overrideGlobalObjects: false` keeps the native global Request/Response:
-  // the Hono shim classes break `response instanceof Response` checks inside
-  // Transformers.js, which silently disables its model file cache and makes
-  // the first model download fail ("Unable to get model file path or buffer").
-  const server: ServerType = serve(
-    { fetch: app.fetch, hostname: host, port, overrideGlobalObjects: false },
-    info => settlePort(info.port)
-  );
-  server.once('error', (error: NodeJS.ErrnoException) => {
-    if (error.code === 'EADDRINUSE') {
-      rejectPort(new PortInUseError(port));
-    } else {
-      rejectPort(error);
-    }
-  });
 
-  let actualPort: number;
+  let httpServer: HttpServerHandle;
   try {
-    actualPort = await ready;
+    httpServer = await startHttpServer(app, { host, port });
   } catch (error) {
-    // Never started listening; ignore the ERR_SERVER_NOT_RUNNING callback error.
-    server.close(() => {});
+    // Never started listening: release the database and report the error.
     db.close();
     throw error;
   }
+  const actualPort = httpServer.port;
 
   let resolveClosed!: () => void;
   const closed = new Promise<void>(resolve => {
@@ -256,55 +249,48 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   // ready" (auto mode degrades to keyword) until it succeeds. A missing
   // optional package is permanent: the daemon stays up in keyword-only
   // mode and does not retry.
-  const startWorkerInBackground = async (): Promise<void> => {
-    for (;;) {
-      try {
-        await worker.start();
-        if (!closing) {
-          semantic.setReady(true);
-        }
-        return;
-      } catch (error) {
-        if (isModuleNotFound(error)) {
-          semantic.markNotInstalled();
-          console.error(
-            'memhub: the semantic stack is not installed; running in keyword-only mode.'
-          );
-          console.error(`memhub: ${SEMANTIC_INSTALL_HINT}`);
-          return;
-        }
-        console.error('memhub: indexing worker failed to start:', errorMessage(error));
-      }
-      const aborted = await sleepOrAborted(retryDelayMs, () => closing);
-      if (aborted) return;
-    }
-  };
-  const workerTask = startWorkerInBackground();
+  const workerTask = startWorkerInBackground({
+    worker,
+    semantic,
+    retryDelayMs,
+    isClosing: () => closing,
+  });
 
   timers.start();
 
   teardown = async (): Promise<void> => {
     closing = true;
-    // Teardown must always settle `closed`, even when a step fails: a
-    // rejected promise here would leave handle.close() awaiting forever.
     try {
-      timers.stop();
-      await worker.stop();
-      await workerTask;
-      const nodeServer = server as Server;
-      const closePromise = new Promise<void>(resolve => {
-        nodeServer.close(() => resolve());
-      });
-      // End idle keep-alive connections so close() does not hang.
-      nodeServer.closeAllConnections?.();
-      await closePromise;
-    } catch (error) {
-      console.error('memhub: error during shutdown:', errorMessage(error));
+      // Every step is isolated: a failing step must never skip the ones
+      // after it. A throwing worker.stop() used to leave the HTTP socket
+      // open, because server.close() was never reached.
+      try {
+        timers.stop();
+      } catch (error) {
+        logDaemonError('error stopping the job timers', error);
+      }
+      try {
+        await worker.stop();
+      } catch (error) {
+        logDaemonError('error stopping the indexing worker', error);
+      }
+      try {
+        await workerTask;
+      } catch (error) {
+        logDaemonError('error waiting for the indexing worker', error);
+      }
+      try {
+        await httpServer.close();
+      } catch (error) {
+        logDaemonError('error closing the HTTP server', error);
+      }
     } finally {
+      // Teardown must always settle `closed`, even when a step fails: a
+      // rejected promise here would leave handle.close() awaiting forever.
       try {
         db.close();
       } catch (error) {
-        console.error('memhub: error closing the database:', errorMessage(error));
+        logDaemonError('error closing the database', error);
       }
       resolveClosed();
     }
@@ -334,29 +320,11 @@ export function isLoopbackHost(host: string): boolean {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
 }
 
-/** Build a CardStore over an open database (used by the semantic search join). */
-function createCardStore(db: DatabaseSync): CardStore {
-  return new CardStore(db, { events: new EventStore(db), activity: new ActivityLog(db) });
-}
-
-/** Sleep that resolves early (true) when the abort check fires. */
-async function sleepOrAborted(
-  ms: number,
-  shouldAbort: () => boolean,
-  checkIntervalMs = 100
-): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (shouldAbort()) return true;
-    if (Date.now() >= deadline) return false;
-    await sleep(Math.min(checkIntervalMs, deadline - Date.now()));
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/**
+ * The semantic backend of the context, when the daemon can control it.
+ * The port only exposes the readiness flags; the concrete class knows
+ * how to set them.
+ */
+function semanticReadiness(context: RuntimeContext): SemanticReadiness | null {
+  return context.semantic instanceof SemanticSearch ? context.semantic : null;
 }

@@ -4,9 +4,14 @@
  * The CLI talks to the daemon over the same HTTP API as hooks. It
  * connects to MEMHUB_HOST when set (cloud deployments), falling back
  * to 127.0.0.1 so the Host header check passes.
+ *
+ * Every call goes through the single transport primitive in
+ * ./http/transport.js, and every call can be handed its own fetch
+ * implementation - a test never has to patch the global.
  */
 
-import { BIND_HOST_ENV } from '../paths.js';
+import { getBindHost } from '../config/env.js';
+import { requestJson, type TransportResult } from './http/transport.js';
 
 /** Health payload returned by GET /healthz. */
 export interface HealthInfo {
@@ -29,10 +34,13 @@ export type HealthProbe =
   | { readonly kind: 'other' }
   | { readonly kind: 'unreachable' };
 
+/** Result of an authenticated POST to an /api route of the daemon. */
+export type ApiPostResult = TransportResult;
+
 /** Host the CLI connects to: MEMHUB_HOST unless it is a wildcard bind. */
 export function connectHost(): string {
-  const host = process.env[BIND_HOST_ENV]?.trim();
-  if (host === undefined || host === '' || host === '0.0.0.0' || host === '::' || host === '[::]') {
+  const host = getBindHost();
+  if (host === '0.0.0.0' || host === '::' || host === '[::]') {
     return '127.0.0.1';
   }
   return host;
@@ -46,46 +54,29 @@ function baseUrl(port: number): string {
  * Probe a daemon port. Distinguishes "a MemHub daemon" from "some other
  * program" from "nothing listening".
  */
-export async function probeHealthz(port: number, timeoutMs = 2000): Promise<HealthProbe> {
-  let response: Response;
-  try {
-    response = await fetch(`${baseUrl(port)}/healthz`, {
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch {
-    return { kind: 'unreachable' };
-  }
-  if (!response.ok) return { kind: 'other' };
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return { kind: 'other' };
-  }
-  if (isHealthInfo(body) && body.app === 'memhub') {
-    return { kind: 'memhub', info: body };
-  }
-  return { kind: 'other' };
+export async function probeHealthz(
+  port: number,
+  timeoutMs = 2000,
+  fetchImpl?: typeof fetch
+): Promise<HealthProbe> {
+  return probeHealthzUrl(`${baseUrl(port)}`, timeoutMs, fetchImpl);
 }
 
 /** POST /api/shutdown with the daemon token. Returns true on success. */
-export async function postShutdown(port: number, token: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${baseUrl(port)}/api/shutdown`, {
-      method: 'POST',
-      headers: { 'x-memhub-token': token },
-      signal: AbortSignal.timeout(2000),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+export async function postShutdown(
+  port: number,
+  token: string,
+  fetchImpl?: typeof fetch
+): Promise<boolean> {
+  const result = await requestJson({
+    method: 'POST',
+    url: `${baseUrl(port)}/api/shutdown`,
+    token,
+    timeoutMs: 2000,
+    fetchImpl,
+  });
+  return result.kind === 'ok' && result.status >= 200 && result.status < 300;
 }
-
-/** Result of an authenticated POST to an /api route of the daemon. */
-export type ApiPostResult =
-  | { readonly kind: 'ok'; readonly status: number; readonly body: unknown }
-  | { readonly kind: 'unreachable' };
 
 /**
  * POST a JSON payload to an /api route with the daemon token.
@@ -97,63 +88,17 @@ export async function postApiJson(
   token: string,
   path: string,
   payload: unknown,
-  timeoutMs = 30_000
+  timeoutMs = 30_000,
+  fetchImpl?: typeof fetch
 ): Promise<ApiPostResult> {
-  let response: Response;
-  try {
-    response = await fetch(`${baseUrl(port)}${path}`, {
-      method: 'POST',
-      headers: { 'x-memhub-token': token, 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch {
-    return { kind: 'unreachable' };
-  }
-  const text = await response.text();
-  let body: unknown = text;
-  if (text !== '') {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
-  }
-  return { kind: 'ok', status: response.status, body };
-}
-
-/** Context that tailors the failure hints to the daemon that was called. */
-export interface ApiFailureContext {
-  /** True when the request went to a remote daemon (memhub login target). */
-  readonly remote?: boolean | undefined;
-}
-
-/** Print an API failure (one JSON line for agents, hints for humans). */
-export function printApiFailure(
-  result: ApiPostResult,
-  target: string,
-  context: ApiFailureContext = {}
-): void {
-  if (result.kind === 'unreachable') {
-    console.error(
-      context.remote === true
-        ? `Cannot reach the MemHub daemon at ${target} — check the URL and whether the server is running.`
-        : `Cannot reach the MemHub daemon at ${target} — start it with: memhub server`
-    );
-    return;
-  }
-  console.error(JSON.stringify(result.body));
-  if (result.status === 401) {
-    console.error(
-      context.remote === true
-        ? `Hint: the device token for ${target} was rejected — log in again: memhub login --base-url ${target}`
-        : 'Hint: the token in ~/.memhub/token (or MEMHUB_TOKEN) must match the running daemon.'
-    );
-  } else if (result.status === 403) {
-    console.error(
-      'Hint: the daemon rejected the Host header. Add the hostname you use to MEMHUB_ALLOWED_HOSTS, or call via http://127.0.0.1.'
-    );
-  }
+  return requestJson({
+    method: 'POST',
+    url: `${baseUrl(port)}${path}`,
+    token,
+    body: payload,
+    timeoutMs,
+    fetchImpl,
+  });
 }
 
 /** Probe a remote daemon by base URL (memhub login flow). */
@@ -162,21 +107,26 @@ export async function probeHealthzUrl(
   timeoutMs = 5000,
   fetchImpl: typeof fetch = fetch
 ): Promise<HealthProbe> {
-  let response: Response;
+  let result: TransportResult;
   try {
-    response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}/healthz`, {
-      signal: AbortSignal.timeout(timeoutMs),
+    result = await requestJson({
+      method: 'GET',
+      url: `${baseUrl.replace(/\/$/, '')}/healthz`,
+      timeoutMs,
+      fetchImpl,
     });
   } catch {
-    return { kind: 'unreachable' };
-  }
-  if (!response.ok) return { kind: 'other' };
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
+    // The body could not be read: something answered, but it is not a
+    // MemHub daemon.
     return { kind: 'other' };
   }
+  if (result.kind === 'unreachable') {
+    return { kind: 'unreachable' };
+  }
+  if (result.status < 200 || result.status >= 300) {
+    return { kind: 'other' };
+  }
+  const body = result.body;
   if (isHealthInfo(body) && body.app === 'memhub') {
     return { kind: 'memhub', info: body };
   }
@@ -193,27 +143,15 @@ export async function remoteApiFetch(
   timeoutMs = 30_000,
   fetchImpl: typeof fetch = fetch
 ): Promise<ApiPostResult> {
-  let response: Response;
-  try {
-    response = await fetchImpl(`${baseUrl.replace(/\/$/, '')}${path}`, {
-      method,
-      headers: { 'x-memhub-token': token, 'content-type': 'application/json' },
-      body: payload === undefined ? undefined : JSON.stringify(payload),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch {
-    return { kind: 'unreachable' };
-  }
-  const text = await response.text();
-  let body: unknown = text;
-  if (text !== '') {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
-  }
-  return { kind: 'ok', status: response.status, body };
+  return requestJson({
+    method,
+    url: `${baseUrl.replace(/\/$/, '')}${path}`,
+    token,
+    body: payload,
+    timeoutMs,
+    contentType: 'application/json',
+    fetchImpl,
+  });
 }
 
 function isHealthInfo(value: unknown): value is HealthInfo {

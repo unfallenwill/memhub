@@ -13,6 +13,7 @@
  * local — cards would go to the wrong daemon.
  */
 
+import { errorMessage } from '../core/util/errors.js';
 import { resolveExistingToken } from '../daemon/token.js';
 import { getTokenPath } from '../paths.js';
 import { normalizeBaseUrl, readCredentials } from './credentials.js';
@@ -64,7 +65,7 @@ export function resolveCommandTarget(options: CommandTargetOptions): CommandTarg
     configured = readConfig(options.home).base_url;
   } catch (error) {
     // A present-but-broken config must block the write, not reroute it.
-    return { kind: 'error', message: error instanceof Error ? error.message : String(error) };
+    return { kind: 'error', message: errorMessage(error) };
   }
   if (configured !== undefined) {
     const baseUrl = normalizeBaseUrl(configured);

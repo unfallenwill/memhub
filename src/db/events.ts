@@ -7,33 +7,30 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import type { EventRow, QueueStats } from '../core/domain/types.js';
+import { systemClock, type Clock } from '../core/ports/clock.js';
+import type { EventRepository } from '../core/ports/repositories.js';
 
-/** Queue statistics for /healthz and /api/queue. */
-export interface QueueStats {
-  readonly pendingEvents: number;
-  /** Seconds since the oldest unprocessed event was created. */
-  readonly oldestPendingEventAgeS: number;
-}
-
-/** Event row shape (internal). */
-export interface EventRow {
-  readonly id: number;
-  readonly type: string;
-  readonly payload: string;
-  readonly createdAt: string;
-  readonly processedAt: string | null;
-  readonly error: string | null;
-}
+// The queue/event types now live in the pure domain layer; they are
+// re-exported here so existing import points keep working.
+export type { EventRow, QueueStats } from '../core/domain/types.js';
 
 /** Append-only access to the events table. */
-export class EventStore {
-  constructor(private readonly db: DatabaseSync) {}
+export class EventStore implements EventRepository {
+  private readonly clock: Clock;
+
+  constructor(
+    private readonly db: DatabaseSync,
+    clock: Clock = systemClock
+  ) {
+    this.clock = clock;
+  }
 
   /** Insert an event. Caller is responsible for the surrounding transaction. */
   enqueue(type: string, payload: unknown): void {
     this.db
       .prepare('INSERT INTO events(type, payload, created_at) VALUES (?, ?, ?)')
-      .run(type, JSON.stringify(payload), new Date().toISOString());
+      .run(type, JSON.stringify(payload), this.clock.isoNow());
   }
 
   /** Count and age of unprocessed events. */
@@ -71,7 +68,7 @@ export class EventStore {
   markProcessed(id: number, error: string | null): void {
     this.db
       .prepare('UPDATE events SET processed_at = ?, error = ? WHERE id = ?')
-      .run(new Date().toISOString(), error, id);
+      .run(this.clock.isoNow(), error, id);
   }
 
   /** Raw rows (debugging/tests). Ordered by id ascending. */
@@ -83,5 +80,23 @@ export class EventStore {
          FROM events ORDER BY id`
       )
       .all() as unknown as EventRow[];
+  }
+
+  /**
+   * Delete the events that are safe to lose: already processed, strictly
+   * below the worker offset, and older than the cutoff.
+   * Returns the number of deleted rows.
+   *
+   * Runs inside the caller's transaction (the worker calls it while
+   * committing the job.retention_cleanup event).
+   */
+  deleteProcessedBefore(offset: number, cutoffIso: string): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM events
+         WHERE processed_at IS NOT NULL AND id < ? AND created_at < ?`
+      )
+      .run(offset, cutoffIso);
+    return Number(result.changes);
   }
 }

@@ -9,11 +9,13 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { DatabaseSync } from 'node:sqlite';
-import { openDatabase } from '../src/db/database.js';
+import { getTransactionRunner, openDatabase } from '../src/db/database.js';
 import { CardStore } from '../src/db/cards.js';
 import { EventStore } from '../src/db/events.js';
 import { ActivityLog } from '../src/db/activity.js';
-import { KeywordSearch } from '../src/db/search.js';
+import { KeywordSearch } from '../src/db/keyword-search.js';
+import { systemClock, type Clock } from '../src/core/ports/clock.js';
+import type { TransactionRunner } from '../src/core/ports/transaction.js';
 import type { EmbeddingProvider } from '../src/embedding/embedder.js';
 import type { CardVectorStore, VectorMatch } from '../src/storage/vector-index.js';
 import type { CreateCardInput } from '../src/db/types.js';
@@ -26,16 +28,30 @@ export interface TestDb {
   readonly events: EventStore;
   readonly activity: ActivityLog;
   readonly search: KeywordSearch;
+  /** The clock every store of this database reads its time from. */
+  readonly clock: Clock;
+  /** The transaction runner every store of this database uses. */
+  readonly transactions: TransactionRunner;
   close(): void;
 }
 
+/** Options for createTestDb. */
+export interface TestDbOptions {
+  /** Clock handed to every store. Defaults to the system clock. */
+  readonly clock?: Clock | undefined;
+  /** Transaction runner handed to every store. Defaults to the db runner. */
+  readonly transactions?: TransactionRunner | undefined;
+}
+
 /** Create an isolated database with all stores wired up. */
-export function createTestDb(): TestDb {
+export function createTestDb(options: TestDbOptions = {}): TestDb {
   const home = mkdtempSync(join(tmpdir(), 'memhub-test-'));
   const db = openDatabase(join(home, 'memhub.db'));
-  const events = new EventStore(db);
-  const activity = new ActivityLog(db);
-  const cards = new CardStore(db, { events, activity });
+  const clock = options.clock ?? systemClock;
+  const transactions = options.transactions ?? getTransactionRunner(db);
+  const events = new EventStore(db, clock);
+  const activity = new ActivityLog(db, clock);
+  const cards = new CardStore(db, { events, activity, clock, transactions });
   const search = new KeywordSearch(db, cards);
   return {
     db,
@@ -44,11 +60,45 @@ export function createTestDb(): TestDb {
     events,
     activity,
     search,
+    clock,
+    transactions,
     close: () => {
       db.close();
       rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     },
   };
+}
+
+/**
+ * A clock whose time is fully controlled by the test.
+ *
+ * Timestamps are frozen, so assertions about created_at/updated_at are
+ * deterministic; advance() moves time forward explicitly.
+ */
+export class MutableClock implements Clock {
+  private current: number;
+
+  constructor(current: string | number = '2024-01-01T00:00:00.000Z') {
+    this.current = typeof current === 'number' ? current : Date.parse(current);
+  }
+
+  now(): number {
+    return this.current;
+  }
+
+  isoNow(): string {
+    return new Date(this.current).toISOString();
+  }
+
+  /** Move the clock to an absolute ISO timestamp. */
+  set(iso: string): void {
+    this.current = Date.parse(iso);
+  }
+
+  /** Move the clock forward by the given number of milliseconds. */
+  advance(ms: number): void {
+    this.current += ms;
+  }
 }
 
 /** Convenience input for card creation with defaults filled in. */
@@ -101,6 +151,8 @@ export interface FakeEmbedderOptions {
 /** In-memory EmbeddingProvider for tests (never downloads a model). */
 export class FakeEmbedder implements EmbeddingProvider {
   readonly modelId: string;
+  /** Matches the dimensionality produced by deterministicVector(). */
+  readonly dimensions = 8;
   /** Every embed() call, for asserting batching behaviour. */
   readonly embedCalls: readonly string[][];
   ensureLoadedCalls = 0;

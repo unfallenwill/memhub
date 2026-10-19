@@ -12,30 +12,42 @@
  */
 
 import type * as lancedb from '@lancedb/lancedb';
+import type { VectorMatch, VectorStore } from '../core/ports/vector.js';
+
+// The vector store contract now lives in the pure port layer
+// (src/core/ports/vector.ts). CardVectorStore is kept as a deprecated
+// alias for backwards compatibility.
+export type {
+  VectorMatch,
+  VectorStore,
+  VectorStore as CardVectorStore,
+} from '../core/ports/vector.js';
 
 /** Name of the LanceDB table holding card vectors. */
 export const CARD_VECTORS_TABLE = 'card_vectors';
 
-/** A nearest-neighbour match from the vector index. */
-export interface VectorMatch {
-  readonly cardId: number;
-  /** Vector distance (lower = more similar). */
-  readonly distance: number;
+/** Options for LanceVectorIndex. */
+export interface LanceVectorIndexOptions {
+  /**
+   * Expected vector dimensionality. When set, upsert() rejects vectors
+   * whose length does not match, so that switching the embedding
+   * provider cannot silently corrupt the LanceDB table schema. When it
+   * is not set no validation happens (backwards compatible).
+   */
+  readonly dimensions?: number | undefined;
 }
 
-/**
- * The vector store contract. Implemented by LanceVectorIndex in
- * production and by in-memory fakes in tests.
- */
-export interface CardVectorStore {
-  /** Connect and prepare the table (idempotent). */
-  initialize(): Promise<void>;
-  /** Store a card vector, replacing any previous vector for the card. */
-  upsert(cardId: number, vector: readonly number[]): Promise<void>;
-  /** Drop all stored vectors (used by full rebuilds). */
-  clear(): Promise<void>;
-  /** Find the `limit` nearest cards to a query vector. */
-  searchByVector(vector: readonly number[], limit: number): Promise<readonly VectorMatch[]>;
+/** Thrown when a vector does not match the configured dimensionality. */
+export class VectorDimensionMismatchError extends Error {
+  constructor(
+    /** The dimensionality the store was configured with. */
+    readonly expected: number,
+    /** The dimensionality of the rejected vector. */
+    readonly actual: number
+  ) {
+    super(`vector dimension mismatch: expected ${expected}, got ${actual}`);
+    this.name = 'VectorDimensionMismatchError';
+  }
 }
 
 interface StoredRow {
@@ -54,12 +66,15 @@ interface QueryRow {
  * The table is created lazily on the first upsert so an empty store
  * never needs a dummy row.
  */
-export class LanceVectorIndex implements CardVectorStore {
+export class LanceVectorIndex implements VectorStore {
   private connection: lancedb.Connection | null = null;
   private table: lancedb.Table | null = null;
   private initPromise: Promise<void> | null = null;
 
-  constructor(private readonly dbPath: string) {}
+  constructor(
+    private readonly dbPath: string,
+    private readonly options: LanceVectorIndexOptions = {}
+  ) {}
 
   async initialize(): Promise<void> {
     if (this.initPromise === null) {
@@ -75,6 +90,9 @@ export class LanceVectorIndex implements CardVectorStore {
   }
 
   async upsert(cardId: number, vector: readonly number[]): Promise<void> {
+    // Validate before touching the store: a mismatching vector would
+    // break the table schema, so it must never reach LanceDB.
+    this.assertDimensions(vector);
     await this.initialize();
     const connection = this.connection;
     if (connection === null) {
@@ -89,6 +107,15 @@ export class LanceVectorIndex implements CardVectorStore {
     // Idempotent write: remove any previous vector for this card first.
     await this.table.delete(`card_id = ${cardId}`);
     await this.table.add([row]);
+  }
+
+  /** Reject vectors whose length differs from the configured dimensions. */
+  private assertDimensions(vector: readonly number[]): void {
+    const expected = this.options.dimensions;
+    if (expected === undefined) return;
+    if (vector.length !== expected) {
+      throw new VectorDimensionMismatchError(expected, vector.length);
+    }
   }
 
   async clear(): Promise<void> {

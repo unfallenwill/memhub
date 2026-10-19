@@ -7,9 +7,8 @@
  * cleanup, and makes the queue the observable record of timer activity.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
-import { withTransaction } from '../db/database.js';
-import { EventStore } from '../db/events.js';
+import type { TransactionRunner } from '../core/ports/transaction.js';
+import type { WorkerRepositories } from './repositories.js';
 
 /** Options for JobTimers. */
 export interface JobTimersOptions {
@@ -21,15 +20,20 @@ export interface JobTimersOptions {
 
 /** Enqueues the periodic job events. */
 export class JobTimers {
-  private readonly db: DatabaseSync;
-  private readonly events: EventStore;
+  private readonly events: WorkerRepositories['events'];
+  private readonly transactions: TransactionRunner;
   private readonly compensationIntervalMs: number;
   private readonly retentionIntervalMs: number;
   private timers: NodeJS.Timeout[] = [];
 
-  constructor(db: DatabaseSync, options: JobTimersOptions = {}) {
-    this.db = db;
-    this.events = new EventStore(db);
+  /**
+   * The repositories of the process. The daemon injects the instances of
+   * the runtime context, so the timers enqueue into the same queue the
+   * worker consumes.
+   */
+  constructor(repositories: WorkerRepositories, options: JobTimersOptions = {}) {
+    this.events = repositories.events;
+    this.transactions = repositories.transactions;
     this.compensationIntervalMs = options.compensationIntervalMs ?? 3_600_000;
     this.retentionIntervalMs = options.retentionIntervalMs ?? 86_400_000;
   }
@@ -59,7 +63,7 @@ export class JobTimers {
   }
 
   private enqueue(type: 'job.compensation_scan' | 'job.retention_cleanup'): void {
-    withTransaction(this.db, () => {
+    this.transactions.transaction(() => {
       this.events.enqueue(type, {});
     });
   }

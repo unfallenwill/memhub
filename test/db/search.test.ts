@@ -81,14 +81,16 @@ describe('KeywordSearch', () => {
     }
   });
 
-  it('updates hit_count and last_accessed_at for matched cards', () => {
+  it('does not record access (the service owns the bookkeeping)', () => {
     const t = createTestDb();
     try {
       t.cards.createCard(cardInput({ title: 'sunset', body: 'evening' }));
       t.search.search('sunset', 10);
       const card = t.cards.getCard(1);
-      expect(card?.hitCount).toBe(1);
-      expect(card?.lastAccessedAt).not.toBeNull();
+      // The backend contract forbids recording access: the search
+      // service records it exactly once for the final result set.
+      expect(card?.hitCount).toBe(0);
+      expect(card?.lastAccessedAt).toBeNull();
     } finally {
       t.close();
     }
@@ -152,6 +154,66 @@ describe('KeywordSearch', () => {
     } finally {
       t.close();
     }
+  });
+
+  it('limits the number of cue hits, not the number of scanned rows', () => {
+    const t = createTestDb();
+    try {
+      // Only the three oldest cards carry the cue. The cue arm scans the
+      // table newest-id-first, so it has to walk past nine non-matching
+      // rows before it finds the first hit: a SQL LIMIT would truncate
+      // the scan and return nothing at all.
+      for (let i = 1; i <= 12; i++) {
+        t.cards.createCard(
+          cardInput({
+            title: `note ${i}`,
+            body: `body ${i}`,
+            cues: i <= 3 ? ['needle'] : ['other'],
+          })
+        );
+      }
+      // Mark every card as vector-indexed so the fallback arm stays out
+      // of the way and the cue arm is the only one that can match.
+      t.db.prepare("UPDATE cards SET indexed_at = '2024-01-01T00:00:00Z'").run();
+
+      const hits = t.search.search('needle', 2);
+      expect(hits.map(h => h.card.id)).toEqual([3, 2]);
+      expect(hits.every(h => h.matchedBy === 'cues')).toBe(true);
+    } finally {
+      t.close();
+    }
+  });
+
+  it('does not query once per candidate row', () => {
+    const preparesFor: number[] = [];
+
+    for (const cardCount of [2, 10]) {
+      const t = createTestDb();
+      try {
+        for (let i = 0; i < cardCount; i++) {
+          t.cards.createCard(
+            cardInput({ title: `note ${i}`, body: `body ${i}`, cues: ['needle'] })
+          );
+        }
+
+        let prepares = 0;
+        const original = t.db.prepare.bind(t.db);
+        t.db.prepare = ((sql: string) => {
+          prepares += 1;
+          return original(sql);
+        }) as typeof t.db.prepare;
+
+        t.search.search('needle', 5);
+        preparesFor.push(prepares);
+      } finally {
+        t.close();
+      }
+    }
+
+    // The number of statements must not grow with the number of cards:
+    // the three search arms read the card columns directly instead of
+    // loading every candidate one by one.
+    expect(preparesFor[1]).toBe(preparesFor[0]);
   });
 });
 

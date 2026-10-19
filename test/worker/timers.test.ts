@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRuntimeContext } from '../../src/runtime/context.js';
 import { JobTimers } from '../../src/worker/timers.js';
+import { createDbContext } from '../../src/db/context.js';
 import { createTestDb } from '../test-utils.js';
 
 describe('JobTimers', () => {
@@ -13,7 +15,7 @@ describe('JobTimers', () => {
 
   it('enqueues a compensation scan every hour and retention cleanup every day', () => {
     const t = createTestDb();
-    const timers = new JobTimers(t.db);
+    const timers = new JobTimers(createDbContext(t.db));
     try {
       timers.start();
       expect(t.events.listAll()).toHaveLength(0); // nothing fires immediately
@@ -35,7 +37,7 @@ describe('JobTimers', () => {
 
   it('supports custom intervals', () => {
     const t = createTestDb();
-    const timers = new JobTimers(t.db, {
+    const timers = new JobTimers(createDbContext(t.db), {
       compensationIntervalMs: 100,
       retentionIntervalMs: 250,
     });
@@ -53,7 +55,7 @@ describe('JobTimers', () => {
 
   it('stop() halts the timers and start() is idempotent', () => {
     const t = createTestDb();
-    const timers = new JobTimers(t.db, { compensationIntervalMs: 50 });
+    const timers = new JobTimers(createDbContext(t.db), { compensationIntervalMs: 50 });
     try {
       timers.start();
       timers.start(); // no duplicate timers
@@ -63,6 +65,25 @@ describe('JobTimers', () => {
       timers.stop();
       vi.advanceTimersByTime(500);
       expect(t.events.listAll()).toHaveLength(1);
+    } finally {
+      timers.stop();
+      t.close();
+    }
+  });
+
+  it('enqueues into the injected queue of the composition root', () => {
+    const t = createTestDb();
+    const context = createRuntimeContext({ db: t.db });
+    const enqueue = vi.spyOn(context.events, 'enqueue');
+    const timers = new JobTimers(context, {
+      compensationIntervalMs: 100,
+    });
+    try {
+      timers.start();
+      vi.advanceTimersByTime(100);
+      expect(enqueue).toHaveBeenCalledWith('job.compensation_scan', {});
+      // The event really landed in the shared queue.
+      expect(context.events.listAll().map(event => event.type)).toEqual(['job.compensation_scan']);
     } finally {
       timers.stop();
       t.close();

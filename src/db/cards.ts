@@ -4,12 +4,23 @@
  * SQLite is the single source of truth for cards. The FTS5 index is kept
  * in sync by triggers (see migrations). All multi-statement operations run
  * in a single transaction so the write path stays constant and fast.
+ *
+ * The store implements the `CardRepository` port: the clock and the
+ * transaction runner are injected, so the store never reads the ambient
+ * time and never talks to a database driver directly.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
-import { withTransaction } from './database.js';
+import { getTransactionRunner } from './database.js';
 import type { ActivityLog } from './activity.js';
 import type { EventStore } from './events.js';
+import { SELECT_COLUMNS, toCard, type CardRow } from './row-mappers.js';
+import { isExactDuplicate } from '../core/policies/card-dedupe.js';
+import { diffCard } from '../core/policies/card-diff.js';
+import { invalidSupersedeTargetMessage } from '../core/policies/card-lifecycle.js';
+import { systemClock, type Clock } from '../core/ports/clock.js';
+import type { TransactionRunner } from '../core/ports/transaction.js';
+import type { CardPage, CardRepository } from '../core/ports/repositories.js';
 import type {
   CardRecord,
   CardStats,
@@ -20,51 +31,41 @@ import type {
   UpdateCardInput,
 } from './types.js';
 
-/** A page of cards (id descending). */
-export interface CardPage {
-  readonly cards: readonly CardRecord[];
-  readonly nextCursor: number | null;
-}
+// The page type now lives in the port layer; it is re-exported here so
+// existing import points keep working.
+export type { CardPage } from '../core/ports/repositories.js';
 
-interface CardRow {
-  id: number;
-  title: string;
-  body: string;
-  type: string;
-  cues: string;
-  confidence: number;
-  writer: string | null;
-  source: string | null;
-  status: string;
-  merged_into: number | null;
-  superseded_by: number | null;
-  created_at: string;
-  updated_at: string;
-  indexed_at: string | null;
-  last_accessed_at: string | null;
-  hit_count: number;
-  archived_at: string | null;
+/** Collaborators of the card store. */
+export interface CardStoreDeps {
+  /** The event queue; card writes enqueue their events. */
+  readonly events: EventStore;
+  /** The audit trail; card writes append their entries. */
+  readonly activity: ActivityLog;
+  /** Source of every timestamp. Defaults to the system clock. */
+  readonly clock?: Clock | undefined;
+  /** Transaction boundary. Defaults to the runner of the given database. */
+  readonly transactions?: TransactionRunner | undefined;
 }
-
-const SELECT_COLUMNS = `id, title, body, type, cues, confidence, writer, source, status,
-  merged_into, superseded_by, created_at, updated_at, indexed_at,
-  last_accessed_at, hit_count, archived_at`;
 
 /**
  * Card data access. One instance per open database.
  * The event store and activity log are injected so card writes can
  * enqueue events and audit entries in the same transaction.
  */
-export class CardStore {
+export class CardStore implements CardRepository {
   private readonly events: EventStore;
   private readonly activity: ActivityLog;
+  private readonly clock: Clock;
+  private readonly transactions: TransactionRunner;
 
   constructor(
     private readonly db: DatabaseSync,
-    deps: { events: EventStore; activity: ActivityLog }
+    deps: CardStoreDeps
   ) {
     this.events = deps.events;
     this.activity = deps.activity;
+    this.clock = deps.clock ?? systemClock;
+    this.transactions = deps.transactions ?? getTransactionRunner(db);
   }
 
   /**
@@ -74,14 +75,16 @@ export class CardStore {
    * that card instead of creating a duplicate (idempotent hook writes).
    */
   createCard(input: CreateCardInput): CreateCardResult {
-    return withTransaction(this.db, () => {
+    return this.transactions.transaction(() => {
+      // The query narrows the candidates down; the policy decides whether
+      // the found card is really the same card.
       const existing = this.db
         .prepare(
-          `SELECT id FROM cards WHERE status = 'active' AND title = ? AND body = ?
+          `SELECT id, title, body FROM cards WHERE status = 'active' AND title = ? AND body = ?
            ORDER BY id DESC LIMIT 1`
         )
-        .get(input.title, input.body) as { id: number } | undefined;
-      if (existing) {
+        .get(input.title, input.body) as { id: number; title: string; body: string } | undefined;
+      if (existing && isExactDuplicate(existing, input)) {
         this.activity.append('hook', 'card.deduplicated', existing.id, {
           title: input.title,
           writer: input.writer ?? null,
@@ -89,7 +92,7 @@ export class CardStore {
         return { id: existing.id, indexed: false, deduplicated: true };
       }
 
-      const now = new Date().toISOString();
+      const now = this.clock.isoNow();
       const result = this.db
         .prepare(
           `INSERT INTO cards(title, body, type, cues, confidence, writer, source,
@@ -177,13 +180,11 @@ export class CardStore {
       confidence: input.confidence ?? current.confidence,
     };
 
-    const contentChanged =
-      next.title !== current.title ||
-      next.body !== current.body ||
-      !cueArraysEqual(next.cues, current.cues);
+    const diff = diffCard(current, next);
+    const contentChanged = diff.contentChanged;
 
-    return withTransaction(this.db, () => {
-      const now = new Date().toISOString();
+    return this.transactions.transaction(() => {
+      const now = this.clock.isoNow();
       this.db
         .prepare(
           `UPDATE cards
@@ -202,12 +203,7 @@ export class CardStore {
           contentChanged ? 1 : 0,
           id
         );
-      const changed: string[] = [];
-      if (next.title !== current.title) changed.push('title');
-      if (next.body !== current.body) changed.push('body');
-      if (next.type !== current.type) changed.push('type');
-      if (!cueArraysEqual(next.cues, current.cues)) changed.push('cues');
-      if (next.confidence !== current.confidence) changed.push('confidence');
+      const changed = diff.changed;
       if (contentChanged) {
         this.events.enqueue('card.updated', { card_id: id, changed });
       }
@@ -223,8 +219,8 @@ export class CardStore {
     const current = this.getCard(id);
     if (!current) return null;
     if (current.status === 'archived') return current;
-    return withTransaction(this.db, () => {
-      const now = new Date().toISOString();
+    return this.transactions.transaction(() => {
+      const now = this.clock.isoNow();
       this.db
         .prepare(
           `UPDATE cards SET status = 'archived', archived_at = ?, updated_at = ? WHERE id = ?`
@@ -247,8 +243,8 @@ export class CardStore {
         throw new InvalidSupersedeTargetError(supersededBy);
       }
     }
-    return withTransaction(this.db, () => {
-      const now = new Date().toISOString();
+    return this.transactions.transaction(() => {
+      const now = this.clock.isoNow();
       this.db
         .prepare(
           `UPDATE cards SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?`
@@ -266,11 +262,11 @@ export class CardStore {
   /** Record access: bump hit_count and last_accessed_at for the given ids. */
   recordAccess(ids: readonly number[]): void {
     if (ids.length === 0) return;
-    withTransaction(this.db, () => {
+    this.transactions.transaction(() => {
       const stmt = this.db.prepare(
         `UPDATE cards SET hit_count = hit_count + 1, last_accessed_at = ? WHERE id = ?`
       );
-      const now = new Date().toISOString();
+      const now = this.clock.isoNow();
       for (const id of ids) {
         stmt.run(now, id);
       }
@@ -351,43 +347,7 @@ export class CardStore {
 /** Thrown when an invalidate request points at a non-existent successor. */
 export class InvalidSupersedeTargetError extends Error {
   constructor(readonly targetId: number) {
-    super(`superseded_by target card ${targetId} does not exist`);
+    super(invalidSupersedeTargetMessage(targetId));
     this.name = 'InvalidSupersedeTargetError';
   }
-}
-
-function cueArraysEqual(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((cue, i) => cue === b[i]);
-}
-
-function toCard(row: CardRow): CardRecord {
-  let cues: string[] = [];
-  try {
-    const parsed = JSON.parse(row.cues) as unknown;
-    if (Array.isArray(parsed)) {
-      cues = parsed.filter((cue): cue is string => typeof cue === 'string');
-    }
-  } catch {
-    cues = [];
-  }
-  return {
-    id: row.id,
-    title: row.title,
-    body: row.body,
-    type: row.type as CardType,
-    cues,
-    confidence: row.confidence,
-    writer: row.writer,
-    source: row.source,
-    status: row.status as CardStatus,
-    mergedInto: row.merged_into,
-    supersededBy: row.superseded_by,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    indexedAt: row.indexed_at,
-    lastAccessedAt: row.last_accessed_at,
-    hitCount: row.hit_count,
-    archivedAt: row.archived_at,
-  };
 }

@@ -5,24 +5,25 @@
  * the matches back to SQLite (the source of truth). Non-active cards are
  * filtered out here; the vector table may legitimately still contain
  * vectors for cards that were archived or superseded after indexing.
+ *
+ * The class talks to ports only (card repository, embedding provider,
+ * vector store), so it can be driven by in-memory fakes in tests.
  */
 
-import type { CardStore } from '../db/cards.js';
-import type { CardRecord } from '../db/types.js';
-import type { EmbeddingProvider } from '../embedding/embedder.js';
-import type { CardVectorStore } from '../storage/vector-index.js';
+import type { EmbeddingProvider } from '../core/ports/embedding.js';
+import type { CardRepository } from '../core/ports/repositories.js';
+import type { SemanticHit, SemanticSearchBackend } from '../core/ports/search.js';
+import type { VectorStore } from '../core/ports/vector.js';
 
-/** A semantic search hit: a card plus a 0..1 similarity score. */
-export interface SemanticHit {
-  readonly card: CardRecord;
-  readonly score: number;
-}
+// The hit type is part of the port contract; it is re-exported here so the
+// historical import path keeps working.
+export type { SemanticHit } from '../core/ports/search.js';
 
 /** Dependencies for SemanticSearch. */
 export interface SemanticSearchDeps {
   readonly embedder: EmbeddingProvider;
-  readonly vectors: CardVectorStore;
-  readonly cards: CardStore;
+  readonly vectors: VectorStore;
+  readonly cards: CardRepository;
 }
 
 /**
@@ -30,7 +31,7 @@ export interface SemanticSearchDeps {
  * the index ready once the worker has loaded the model and prepared the
  * vector table) so /healthz and /api/search agree on one flag.
  */
-export class SemanticSearch {
+export class SemanticSearch implements SemanticSearchBackend {
   private readyFlag = false;
   private notInstalledFlag = false;
 

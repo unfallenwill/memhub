@@ -12,6 +12,7 @@ import {
   TOKEN_PLACEHOLDER,
   WEB_DIST_ENV,
 } from '../../src/http/static.js';
+import { createRuntimeContext, type RuntimeContext } from '../../src/runtime/context.js';
 import { createTestDb, type TestDb } from '../test-utils.js';
 
 const TOKEN = 'static-test-token';
@@ -236,11 +237,12 @@ describe('resolveWebDist', () => {
 describe('static hosting routes', () => {
   let t: TestDb;
   let db: DatabaseSync;
+  let context: RuntimeContext;
   let dist: string;
 
   function request(path: string, init: RequestInit = {}): Promise<Response> {
     const app = createApp({
-      db,
+      context,
       token: TOKEN,
       version: '1.2.3-test',
       pid: 4242,
@@ -258,6 +260,7 @@ describe('static hosting routes', () => {
   beforeEach(() => {
     t = createTestDb();
     db = t.db;
+    context = createRuntimeContext({ db });
     dist = buildFakeDist();
   });
 
@@ -329,7 +332,7 @@ describe('static hosting routes', () => {
 
   it('does not register static routes when webDist is unset', async () => {
     const app = createApp({
-      db,
+      context,
       token: TOKEN,
       version: '1.2.3-test',
       pid: 4242,

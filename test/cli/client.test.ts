@@ -122,7 +122,7 @@ describe('client', () => {
       const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
       vi.stubGlobal('fetch', fetchMock);
       expect(await postShutdown(7800, 'secret')).toBe(true);
-      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
       expect(url).toBe('http://127.0.0.1:7800/api/shutdown');
       expect(init.method).toBe('POST');
       expect((init.headers as Record<string, string>)['x-memhub-token']).toBe('secret');
@@ -153,7 +153,7 @@ describe('client', () => {
       vi.stubGlobal('fetch', fetchMock);
       const result = await remoteApiFetch('https://x.example/', 'tok', 'DELETE', '/api/auth/token');
       expect(result).toEqual({ kind: 'ok', status: 200, body: { ok: true } });
-      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
       expect(url).toBe('https://x.example/api/auth/token');
       expect(init.method).toBe('DELETE');
       expect((init.headers as Record<string, string>)['x-memhub-token']).toBe('tok');

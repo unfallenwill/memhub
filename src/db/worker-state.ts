@@ -8,14 +8,20 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import type { WorkerStateRepository } from '../core/ports/repositories.js';
 
 export const WORKER_STATE_KEYS = {
   lastEventId: 'indexer.last_event_id',
   model: 'indexer.model',
 } as const;
 
-/** Typed access to the worker_state table. */
-export class WorkerStateStore {
+/**
+ * Typed access to the worker_state table.
+ *
+ * The table stores bare key/value pairs without a timestamp column, so
+ * this store needs no clock.
+ */
+export class WorkerStateStore implements WorkerStateRepository {
   constructor(private readonly db: DatabaseSync) {}
 
   /** Read a state value, or null when unset. */

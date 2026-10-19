@@ -129,7 +129,7 @@ npx pnpm run build:web    # 构建 Web UI
 npx pnpm run quality      # lint + typecheck + format + coverage(≥80%) + build
 ```
 
-源码布局：`src/cli`（CLI）· `src/daemon` · `src/db`（SQLite）· `src/http`（Hono API）· `src/embedding` + `src/storage`（向量）· `src/worker`（事件 worker）· `web/`（Preact UI）· `test/` 镜像 `src/`。
+源码布局：`src/core`（纯领域层：类型、策略、端口）· `src/config`（环境变量与路径）· `src/db`（SQLite）· `src/auth` · `src/services` · `src/embedding` + `src/storage`（向量）· `src/worker`（事件 worker）· `src/http`（Hono API）· `src/runtime`（组合根）· `src/daemon` · `src/cli` · `web/`（Preact UI）· `test/` 镜像 `src/`。分层边界见 [docs/architecture.md](docs/architecture.md)，由 `pnpm run lint` 强制检查。
 
 ## 路线图
 

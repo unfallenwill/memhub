@@ -4,6 +4,7 @@ import type { Hono } from 'hono';
 import { createApp } from '../../src/http/app.js';
 import { DeviceTokenStore, tokenHash } from '../../src/db/device-tokens.js';
 import { SemanticSearch } from '../../src/services/semantic-search.js';
+import { createRuntimeContext, type RuntimeContext } from '../../src/runtime/context.js';
 import {
   createTestDb,
   deterministicVector,
@@ -20,11 +21,12 @@ const LOCAL_ENV = { incoming: { socket: { remoteAddress: '127.0.0.1' } } };
 describe('HTTP app', () => {
   let t: TestDb;
   let db: DatabaseSync;
+  let context: RuntimeContext;
   let requestShutdown: ReturnType<typeof vi.fn>;
 
   function app() {
     return createApp({
-      db,
+      context,
       token: TOKEN,
       version: '1.2.3-test',
       pid: 4242,
@@ -33,15 +35,14 @@ describe('HTTP app', () => {
     });
   }
 
-  function appWithSemantic(semantic: SemanticSearch): Hono {
+  function appWithContext(context: RuntimeContext): Hono {
     return createApp({
-      db,
+      context,
       token: TOKEN,
       version: '1.2.3-test',
       pid: 4242,
       startedAt: Date.now() - 5000,
       requestShutdown,
-      semantic,
     });
   }
 
@@ -72,7 +73,7 @@ describe('HTTP app', () => {
       ...((init.headers as Record<string, string>) ?? {}),
     };
     return createApp({
-      db,
+      context,
       token: TOKEN,
       version: '1.2.3-test',
       pid: 4242,
@@ -85,6 +86,7 @@ describe('HTTP app', () => {
   beforeEach(() => {
     t = createTestDb();
     db = t.db;
+    context = createRuntimeContext({ db });
     requestShutdown = vi.fn();
   });
 
@@ -141,7 +143,7 @@ describe('HTTP app', () => {
     it('accepts configured hosts regardless of the connection origin', async () => {
       const remote = { incoming: { socket: { remoteAddress: '203.0.113.9' } } };
       const response = await createApp({
-        db,
+        context,
         token: TOKEN,
         version: '1.2.3-test',
         pid: 4242,
@@ -653,6 +655,7 @@ describe('HTTP app', () => {
   });
 
   describe('POST /api/search with a semantic index', () => {
+    let semanticContext: RuntimeContext;
     let semantic: SemanticSearch;
     let vectors: FakeVectorStore;
 
@@ -661,16 +664,19 @@ describe('HTTP app', () => {
         host: '127.0.0.1:7800',
         ...((init.headers as Record<string, string>) ?? {}),
       };
-      return appWithSemantic(semantic).request(path, { ...init, headers }, LOCAL_ENV);
+      return appWithContext(semanticContext).request(path, { ...init, headers }, LOCAL_ENV);
     }
 
     beforeEach(() => {
       vectors = new FakeVectorStore();
-      semantic = new SemanticSearch({
+      semanticContext = createRuntimeContext({
+        db,
         embedder: new FakeEmbedder(),
         vectors,
-        cards: t.cards,
       });
+      // The composition root built the semantic backend; the app and the
+      // search service share this very instance.
+      semantic = semanticContext.semantic as SemanticSearch;
     });
 
     it('answers semantic mode once the index is ready', async () => {
@@ -776,7 +782,7 @@ describe('HTTP app', () => {
 
     it('healthz reports readiness from the injected semantic index', async () => {
       const notReady = (await (
-        await appWithSemantic(semantic).request(
+        await appWithContext(semanticContext).request(
           '/healthz',
           { headers: { host: 'localhost' } },
           LOCAL_ENV
@@ -786,7 +792,7 @@ describe('HTTP app', () => {
 
       semantic.setReady(true);
       const ready = (await (
-        await appWithSemantic(semantic).request(
+        await appWithContext(semanticContext).request(
           '/healthz',
           { headers: { host: 'localhost' } },
           LOCAL_ENV

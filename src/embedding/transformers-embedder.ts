@@ -33,6 +33,7 @@ export interface TransformersEmbedderOptions {
  */
 export class TransformersEmbedder implements EmbeddingProvider {
   readonly modelId = EMBEDDING_MODEL_ID;
+  readonly dimensions = EMBEDDING_DIM;
 
   private extractor: FeatureExtractionPipeline | null = null;
   private initPromise: Promise<void> | null = null;

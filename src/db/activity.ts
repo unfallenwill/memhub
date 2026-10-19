@@ -6,24 +6,13 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
-import type { ActivityActor } from './types.js';
+import type { ActivityActor, ActivityEntry, ActivityPage } from '../core/domain/types.js';
+import { systemClock, type Clock } from '../core/ports/clock.js';
+import type { ActivityRepository } from '../core/ports/repositories.js';
 
-/** An activity log entry. */
-export interface ActivityEntry {
-  readonly id: number;
-  readonly ts: string;
-  readonly actor: ActivityActor;
-  readonly action: string;
-  readonly cardId: number | null;
-  /** Parsed detail object, or null. */
-  readonly detail: Record<string, unknown> | null;
-}
-
-/** A page of activity entries. */
-export interface ActivityPage {
-  readonly entries: readonly ActivityEntry[];
-  readonly nextCursor: number | null;
-}
+// The entry/page types now live in the pure domain layer; they are
+// re-exported here so existing import points keep working.
+export type { ActivityEntry, ActivityPage } from '../core/domain/types.js';
 
 interface ActivityRow {
   id: number;
@@ -35,8 +24,15 @@ interface ActivityRow {
 }
 
 /** Append-only access to the activity_log table. */
-export class ActivityLog {
-  constructor(private readonly db: DatabaseSync) {}
+export class ActivityLog implements ActivityRepository {
+  private readonly clock: Clock;
+
+  constructor(
+    private readonly db: DatabaseSync,
+    clock: Clock = systemClock
+  ) {
+    this.clock = clock;
+  }
 
   /** Append an entry. Caller is responsible for the surrounding transaction. */
   append(
@@ -50,7 +46,7 @@ export class ActivityLog {
         'INSERT INTO activity_log(ts, actor, action, card_id, detail) VALUES (?, ?, ?, ?, ?)'
       )
       .run(
-        new Date().toISOString(),
+        this.clock.isoNow(),
         actor,
         action,
         cardId,
