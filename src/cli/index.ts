@@ -62,9 +62,10 @@ memhub search options:
   --limit <number>       Max results, 1-100 (default 10)
   --base-url <url>       Remote daemon (memhub login target) instead of local
 
-Target resolution for add/search: an explicit --base-url wins, then an
-explicit --port (always the local daemon), then the configured default
-(memhub config set base-url <url>), then the local daemon.
+Target resolution for add/search: --base-url and --port are mutually
+exclusive. Without --base-url, an explicit --port means the local
+daemon; otherwise the configured default (memhub config set base-url
+<url>) applies, and finally the local daemon.
 
 Environment:
   MEMHUB_HOME            Data directory (default ~/.memhub)

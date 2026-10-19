@@ -8,9 +8,9 @@
  */
 
 import { CARD_TYPES, type CardType } from '../db/types.js';
-import { getMemhubHome } from '../paths.js';
+import { getDefaultPort, getMemhubHome } from '../paths.js';
 import { parsePortValue, requireValue } from './args.js';
-import { postApiJson, printApiFailure, remoteApiFetch } from './client.js';
+import { connectHost, postApiJson, printApiFailure, remoteApiFetch } from './client.js';
 import { normalizeBaseUrl } from './credentials.js';
 import { resolveCommandTarget } from './target.js';
 
@@ -44,7 +44,7 @@ export function parseAddArgs(argv: readonly string[]): AddCommandOptions {
   let type: CardType = 'insight';
   const cues: string[] = [];
   let writer: string | undefined;
-  let port = 7800;
+  let port = getDefaultPort();
   let portSet = false;
   let url: string | undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -133,7 +133,8 @@ export async function runAddCommand(options: AddCommandOptions): Promise<number>
   if (result.kind !== 'ok' || result.status !== 202) {
     printApiFailure(
       result,
-      target.kind === 'remote' ? target.baseUrl : `http://127.0.0.1:${target.port}`
+      target.kind === 'remote' ? target.baseUrl : `http://${connectHost()}:${target.port}`,
+      { remote: target.kind === 'remote' }
     );
     return 1;
   }

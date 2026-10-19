@@ -20,6 +20,7 @@ function jsonResponse(body: unknown, status: number): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   while (homes.length > 0) {
     const home = homes.pop();
@@ -36,6 +37,19 @@ describe('parseAddArgs', () => {
       cues: [],
       writer: undefined,
       port: 7800,
+      portSet: false,
+    });
+  });
+
+  it('defaults the port to MEMHUB_PORT', () => {
+    vi.stubEnv('MEMHUB_PORT', '7900');
+    expect(parseAddArgs(['--title', 'T'])).toEqual({
+      title: 'T',
+      body: null,
+      type: 'insight',
+      cues: [],
+      writer: undefined,
+      port: 7900,
       portSet: false,
     });
   });
@@ -351,6 +365,36 @@ describe('runAddCommand', () => {
     expect(code).toBe(0);
     expect(calls).toEqual(['POST https://x.example/api/cards']);
     expect(log).toHaveBeenCalled();
+  });
+
+  it('prints a remote login hint on a remote 401', async () => {
+    const { home } = makeHome();
+    writeFileSync(
+      join(home, 'credentials.json'),
+      JSON.stringify({ version: 1, url: 'https://x.example', token: 'remote-token' })
+    );
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({ version: 1, base_url: 'https://x.example' })
+    );
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ error: { code: 'unauthorized', message: 'revoked' } }, 401))
+    );
+    const code = await runAddCommand({
+      title: 'T',
+      body: 'B',
+      type: 'insight',
+      cues: [],
+      writer: undefined,
+      port: 7800,
+      home,
+    });
+    expect(code).toBe(1);
+    const output = error.mock.calls.flat().join('\n');
+    expect(output).toContain('memhub login --base-url https://x.example');
+    expect(output).not.toContain('~/.memhub/token');
   });
 
   it('an explicit --port forces the local daemon over config', async () => {

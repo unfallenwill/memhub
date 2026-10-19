@@ -68,7 +68,14 @@ function deviceLabel(): string {
 /** Run the login command. Returns the process exit code. */
 export async function runLoginCommand(options: LoginCommandOptions): Promise<number> {
   const home = options.home ?? getMemhubHome();
-  const rawUrl = options.url ?? readConfig(home).base_url;
+  let configured: string | undefined;
+  try {
+    configured = readConfig(home).base_url;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const rawUrl = options.url ?? configured;
   if (rawUrl === undefined) {
     console.error('usage: memhub login --base-url <url>');
     console.error('e.g. memhub login --base-url https://memhub.example.com');
@@ -76,8 +83,13 @@ export async function runLoginCommand(options: LoginCommandOptions): Promise<num
   }
   const baseUrl = normalizeBaseUrl(rawUrl);
   if (baseUrl === null) {
-    console.error(`Invalid server URL: ${rawUrl}`);
-    console.error('Expected something like https://memhub.example.com (no path).');
+    if (options.url === undefined) {
+      console.error(`Invalid base-url in the config: ${rawUrl}`);
+      console.error('Fix it with: memhub config set base-url <url>');
+    } else {
+      console.error(`Invalid server URL: ${rawUrl}`);
+      console.error('Expected something like https://memhub.example.com (no path).');
+    }
     return 1;
   }
   const doSleep = options.sleep ?? sleep;
@@ -186,6 +198,15 @@ export async function runLoginCommand(options: LoginCommandOptions): Promise<num
   writeCredentials(home, { version: 1, url: baseUrl, token: accessToken });
   console.log('');
   console.log(`Logged in to ${baseUrl} (MemHub v${probe.info.version}).`);
+  const configuredNormalized = configured === undefined ? undefined : normalizeBaseUrl(configured);
+  if (configuredNormalized !== undefined && configuredNormalized !== baseUrl) {
+    // Otherwise the next plain `memhub add` targets the old server and the
+    // resulting hint would overwrite this fresh login.
+    console.log(`Note: the configured default base-url is still ${configuredNormalized}.`);
+    console.log(
+      `Plain memhub add targets it — change it with: memhub config set base-url ${baseUrl}`
+    );
+  }
   console.log(`Token saved. Use: memhub add --base-url ${baseUrl} ...`);
   console.log(`Or make it the default: memhub config set base-url ${baseUrl}`);
   return 0;

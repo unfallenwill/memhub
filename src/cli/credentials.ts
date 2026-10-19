@@ -2,13 +2,13 @@
  * Remote daemon credentials (written by `memhub login`).
  *
  * A single remote target is stored at <home>/credentials.json with
- * 0600 permissions (POSIX; Windows ignores the mode). Tokens from the
- * MEMHUB_TOKEN environment variable always win over the file.
+ * 0600 permissions (POSIX; Windows ignores the mode). Remote requests
+ * always authenticate with this device token — MEMHUB_TOKEN is the
+ * local daemon's token and is never sent to a remote daemon.
  */
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
-import { TOKEN_ENV } from '../daemon/token.js';
 import { getCredentialsPath, getMemhubHome } from '../paths.js';
 
 /** Shape of the credentials file. */
@@ -77,18 +77,4 @@ export function deleteCredentials(home: string = getMemhubHome()): boolean {
   if (!existsSync(path)) return false;
   rmSync(path);
   return true;
-}
-
-/** Resolution order: MEMHUB_TOKEN env, then a URL-matching credentials file. */
-export function resolveRemoteToken(
-  baseUrl: string,
-  home: string = getMemhubHome()
-): { token: string } | { error: string } {
-  const fromEnv = process.env[TOKEN_ENV]?.trim();
-  if (fromEnv !== undefined && fromEnv !== '') return { token: fromEnv };
-  const stored = readCredentials(home);
-  if (stored !== null && stored.url === baseUrl) {
-    return { token: stored.token };
-  }
-  return { error: `not logged in to ${baseUrl}` };
 }

@@ -7,9 +7,9 @@
  */
 
 import { SEARCH_MODES, type SearchMode } from '../db/types.js';
-import { getMemhubHome } from '../paths.js';
+import { getDefaultPort, getMemhubHome } from '../paths.js';
 import { parsePortValue } from './args.js';
-import { postApiJson, printApiFailure, remoteApiFetch } from './client.js';
+import { connectHost, postApiJson, printApiFailure, remoteApiFetch } from './client.js';
 import { normalizeBaseUrl } from './credentials.js';
 import { resolveCommandTarget } from './target.js';
 
@@ -36,7 +36,7 @@ export function parseSearchArgs(argv: readonly string[]): SearchCommandOptions {
   let query: string | undefined;
   let mode: SearchMode = 'auto';
   let limit = 10;
-  let port = 7800;
+  let port = getDefaultPort();
   let portSet = false;
   let url: string | undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -116,7 +116,8 @@ export async function runSearchCommand(options: SearchCommandOptions): Promise<n
   if (result.kind !== 'ok' || result.status !== 200) {
     printApiFailure(
       result,
-      target.kind === 'remote' ? target.baseUrl : `http://127.0.0.1:${target.port}`
+      target.kind === 'remote' ? target.baseUrl : `http://${connectHost()}:${target.port}`,
+      { remote: target.kind === 'remote' }
     );
     return 1;
   }

@@ -105,7 +105,7 @@ hook (curl) ──► HTTP API ──► SQLite（cards、events、activity log�
 
 守护进程默认保持本地优先：仅监听回环地址、仅接受本机 Host 头、token 自动生成。后三个变量用于云端/容器部署的显式开启，详见 [docs/user-guide.md](docs/user-guide.md)。
 
-`add`/`search` 按以下顺序选定目标：显式 `--base-url` > 显式 `--port`（始终本地守护进程）> `memhub config set base-url <url>` 配置的默认值 > 本地守护进程。
+`add`/`search` 按以下顺序选定目标：显式 `--base-url` 或 `--port`（互斥；`--port` 始终指本地守护进程）> `memhub config set base-url <url>` 配置的默认值 > 本地守护进程。
 
 ## Docker
 

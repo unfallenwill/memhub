@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -53,13 +53,31 @@ describe('config store', () => {
     expect(readConfig(home).base_url).toBe('https://y.example');
   });
 
-  it('treats malformed config files as empty', () => {
+  it('rejects malformed config files', () => {
     writeFileSync(getConfigPath(home), 'not json', 'utf-8');
-    expect(readConfig(home)).toEqual({ version: 1 });
+    expect(() => readConfig(home)).toThrow(/not valid JSON/);
     writeFileSync(getConfigPath(home), JSON.stringify({ version: 2, base_url: 'x' }));
-    expect(readConfig(home)).toEqual({ version: 1 });
+    expect(() => readConfig(home)).toThrow(/unsupported version 2/);
     writeFileSync(getConfigPath(home), JSON.stringify({ version: 1, base_url: 42 }));
-    expect(readConfig(home)).toEqual({ version: 1 });
+    expect(() => readConfig(home)).toThrow(/base_url/);
+  });
+
+  it('preserves unknown keys across set and unset', () => {
+    writeFileSync(
+      getConfigPath(home),
+      JSON.stringify({ version: 1, base_url: 'https://a.example', future_key: true })
+    );
+    setConfigValue(home, 'base-url', 'https://b.example');
+    expect(JSON.parse(readFileSync(getConfigPath(home), 'utf-8'))).toEqual({
+      version: 1,
+      base_url: 'https://b.example',
+      future_key: true,
+    });
+    unsetConfigValue(home, 'base-url');
+    expect(JSON.parse(readFileSync(getConfigPath(home), 'utf-8'))).toEqual({
+      version: 1,
+      future_key: true,
+    });
   });
 
   it('sets and unsets values', () => {

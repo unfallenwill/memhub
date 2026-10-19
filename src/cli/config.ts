@@ -35,6 +35,10 @@ export type ConfigCommandOptions =
 
 const USAGE = 'usage: memhub config <set|get|list|unset> [key] [value]  (supported key: base-url)';
 
+function unknownKey(value: string): string {
+  return `unknown config key: ${value} (supported: ${CONFIG_KEYS.join(', ')})`;
+}
+
 /** Parse `memhub config` arguments. Throws on invalid input. */
 export function parseConfigArgs(argv: readonly string[]): ConfigCommandOptions {
   const action = argv[0];
@@ -44,15 +48,13 @@ export function parseConfigArgs(argv: readonly string[]): ConfigCommandOptions {
     return { action };
   }
   if (action === 'set') {
-    if (rest.length !== 2 || !isConfigKey(rest[0])) throw new Error(USAGE);
+    if (rest.length !== 2) throw new Error(USAGE);
+    if (!isConfigKey(rest[0])) throw new Error(unknownKey(rest[0]));
     return { action, key: rest[0], value: rest[1] };
   }
   if (action === 'get' || action === 'unset') {
-    if (rest.length !== 1 || !isConfigKey(rest[0])) {
-      throw new Error(
-        `unknown config key: ${rest[0] ?? '(missing)'} (supported: ${CONFIG_KEYS.join(', ')})`
-      );
-    }
+    if (rest.length !== 1) throw new Error(USAGE);
+    if (!isConfigKey(rest[0])) throw new Error(unknownKey(rest[0]));
     return { action, key: rest[0] };
   }
   throw new Error(USAGE);
@@ -82,7 +84,8 @@ export function runConfigCommand(options: ConfigCommandOptions): number {
     case 'get': {
       const value = getConfigValue(home, options.key);
       if (value === undefined) {
-        console.log(`${options.key} is not set`);
+        // stderr + exit 1 so `$(memhub config get base-url)` captures nothing.
+        console.error(`${options.key} is not set`);
         return 1;
       }
       console.log(value);

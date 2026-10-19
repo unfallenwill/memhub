@@ -109,13 +109,24 @@ describe('resolveCommandTarget', () => {
     });
   });
 
-  it('MEMHUB_TOKEN wins over the stored device token', () => {
-    vi.stubEnv('MEMHUB_TOKEN', 'env-token');
+  it('errors on an unparseable config file instead of falling back', () => {
+    localToken();
+    writeFileSync(join(home, 'config.json'), 'not json at all');
+    const target = resolveCommandTarget({ port: 7800, home });
+    expect(target.kind).toBe('error');
+    if (target.kind === 'error') {
+      expect(target.message).toContain('unreadable');
+      expect(target.message).toContain('memhub config set base-url');
+    }
+  });
+
+  it('MEMHUB_TOKEN never hijacks the remote device token', () => {
+    vi.stubEnv('MEMHUB_TOKEN', 'local-daemon-token');
     loggedIn();
     expect(resolveCommandTarget({ url: 'https://x.example', port: 7800, home })).toEqual({
       kind: 'remote',
       baseUrl: 'https://x.example',
-      token: 'env-token',
+      token: 'device-token',
     });
   });
 });

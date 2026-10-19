@@ -15,11 +15,10 @@ import {
   deleteCredentials,
   normalizeBaseUrl,
   readCredentials,
-  resolveRemoteToken,
   writeCredentials,
 } from '../../src/cli/credentials.js';
 import { readConfig, writeConfig } from '../../src/cli/config-file.js';
-import { getCredentialsPath, getMemhubHome } from '../../src/paths.js';
+import { getCredentialsPath, getConfigPath, getMemhubHome } from '../../src/paths.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -96,26 +95,6 @@ describe('credentials store', () => {
     writeFileSync(getCredentialsPath(home), JSON.stringify({ version: 2, url: 'x', token: 'y' }));
     expect(readCredentials(home)).toBeNull();
   });
-
-  describe('resolveRemoteToken', () => {
-    it('prefers MEMHUB_TOKEN over the file', () => {
-      vi.stubEnv('MEMHUB_TOKEN', 'env-token');
-      writeCredentials(home, { version: 1, url: 'https://x.example', token: 'file-token' });
-      expect(resolveRemoteToken('https://x.example', home)).toEqual({ token: 'env-token' });
-    });
-
-    it('uses the file when the URL matches', () => {
-      writeCredentials(home, { version: 1, url: 'https://x.example', token: 'file-token' });
-      expect(resolveRemoteToken('https://x.example', home)).toEqual({ token: 'file-token' });
-    });
-
-    it('errors for a different URL', () => {
-      writeCredentials(home, { version: 1, url: 'https://x.example', token: 'file-token' });
-      expect(resolveRemoteToken('https://other.example', home)).toEqual({
-        error: 'not logged in to https://other.example',
-      });
-    });
-  });
 });
 
 describe('runLogoutCommand', () => {
@@ -169,6 +148,29 @@ describe('runLogoutCommand', () => {
     expect(await runLogoutCommand({ home })).toBe(0);
     expect(readConfig(home)).toEqual({ version: 1 });
     expect(logs.join('\n')).toContain('Unset the default base-url');
+  });
+
+  it('clears a hand-edited non-normalized default base-url', async () => {
+    writeCredentials(home, { version: 1, url: 'https://x.example', token: 't'.repeat(64) });
+    writeFileSync(
+      getConfigPath(home),
+      JSON.stringify({ version: 1, base_url: 'https://x.example/' })
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ ok: true }))
+    );
+    expect(await runLogoutCommand({ home })).toBe(0);
+    expect(readConfig(home)).toEqual({ version: 1 });
+  });
+
+  it('shows (and keeps) a leftover default when logging out without credentials', async () => {
+    writeConfig(home, { version: 1, base_url: 'https://x.example' });
+    expect(await runLogoutCommand({ home })).toBe(0);
+    // kept on purpose: flagless `memhub login` reuses it
+    expect(readConfig(home).base_url).toBe('https://x.example');
+    expect(logs.join('\n')).toContain('default base-url is still https://x.example');
+    expect(logs.join('\n')).toContain('memhub config unset base-url');
   });
 
   it('keeps the configured base-url when it points elsewhere', async () => {

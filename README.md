@@ -112,7 +112,7 @@ Card types: `fact | preference | decision | insight | pattern`. Full reference: 
 
 The daemon is local-first by default: loopback bind, local-only Host headers, generated token. The last three variables opt into cloud/container deployments — see [docs/user-guide.md](docs/user-guide.md).
 
-`add`/`search` pick their target in this order: an explicit `--base-url`, then an explicit `--port` (always the local daemon), then the `base-url` set with `memhub config set base-url <url>`, then the local daemon.
+`add`/`search` pick their target in this order: an explicit `--base-url` or `--port` (mutually exclusive; `--port` always means the local daemon), then the `base-url` set with `memhub config set base-url <url>`, then the local daemon.
 
 ## Docker
 

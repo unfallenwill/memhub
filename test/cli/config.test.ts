@@ -30,8 +30,10 @@ describe('parseConfigArgs', () => {
 
   it('rejects a bad arity and unknown keys', () => {
     expect(() => parseConfigArgs(['set', 'base-url'])).toThrow(/usage/);
-    expect(() => parseConfigArgs(['set', 'port', '7800'])).toThrow(/usage/);
+    expect(() => parseConfigArgs(['set', 'base-url', 'x', 'y'])).toThrow(/usage/);
+    expect(() => parseConfigArgs(['set', 'port', '7800'])).toThrow('unknown config key: port');
     expect(() => parseConfigArgs(['get', 'port'])).toThrow('unknown config key: port');
+    expect(() => parseConfigArgs(['get', 'base-url', 'extra'])).toThrow(/usage/);
     expect(() => parseConfigArgs(['list', 'base-url'])).toThrow(/usage/);
   });
 });
@@ -76,7 +78,8 @@ describe('runConfigCommand', () => {
 
   it('get prints the value or exits 1 when unset', () => {
     expect(runConfigCommand({ action: 'get', key: 'base-url', home })).toBe(1);
-    expect(logs.join('\n')).toContain('not set');
+    expect(errors.join('\n')).toContain('not set');
+    expect(logs).toEqual([]);
     runConfigCommand({ action: 'set', key: 'base-url', value: 'https://x.example', home });
     logs.length = 0;
     expect(runConfigCommand({ action: 'get', key: 'base-url', home })).toBe(0);

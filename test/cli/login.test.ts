@@ -90,6 +90,57 @@ describe('runLoginCommand', () => {
     expect(requested).toContain('https://x.example/healthz');
   });
 
+  it('blames the config when the configured base-url is invalid', async () => {
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({ version: 1, base_url: 'memhub.example.com' })
+    );
+    const code = await runLoginCommand({ home, fetchImpl: vi.fn(async () => jsonResponse({})) });
+    expect(code).toBe(1);
+    expect(errors.join('\n')).toContain('Invalid base-url in the config');
+    expect(errors.join('\n')).toContain('memhub config set base-url');
+  });
+
+  it('warns when logging in to a server other than the configured default', async () => {
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({ version: 1, base_url: 'https://old.example' })
+    );
+    let pollCount = 0;
+    const fetchImpl = vi.fn(async (input: string) => {
+      const url = String(input);
+      if (url.endsWith('/healthz')) return jsonResponse(HEALTH);
+      if (url.endsWith('/oauth/device/code')) {
+        return jsonResponse({
+          device_code: 'd'.repeat(64),
+          user_code: 'ABCD-1234',
+          verification_uri: 'https://new.example/login',
+          verification_uri_complete: 'https://new.example/login?code=ABCD-1234',
+          expires_in: 300,
+          interval: 5,
+          requires_setup: false,
+        });
+      }
+      if (url.endsWith('/oauth/device/token')) {
+        pollCount += 1;
+        if (pollCount === 1) return jsonResponse({ error: 'authorization_pending' }, 400);
+        return jsonResponse({ access_token: 't'.repeat(64), token_type: 'Bearer' });
+      }
+      if (url.endsWith('/api/queue')) return jsonResponse({ pending_events: 0 });
+      throw new Error(`unexpected url: ${url}`);
+    });
+    const code = await runLoginCommand({
+      url: 'https://new.example',
+      home,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      open: () => false,
+      sleep: async () => {},
+    });
+    expect(code).toBe(0);
+    expect(logs.join('\n')).toContain('default base-url is still https://old.example');
+    expect(logs.join('\n')).toContain('memhub config set base-url https://new.example');
+  });
+
   it('exits 1 when the server is unreachable', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error('ECONNREFUSED');

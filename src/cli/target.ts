@@ -7,13 +7,15 @@
  *   3. the default base-url from `memhub config`,
  *   4. the local daemon (MEMHUB_HOST / 127.0.0.1).
  *
- * A malformed configured base_url is an error, never a silent fallback to
+ * Remote requests authenticate with the `memhub login` device token
+ * only — MEMHUB_TOKEN holds the local daemon's token. A malformed or
+ * invalid configured base_url is an error, never a silent fallback to
  * local — cards would go to the wrong daemon.
  */
 
 import { resolveExistingToken } from '../daemon/token.js';
 import { getTokenPath } from '../paths.js';
-import { normalizeBaseUrl, resolveRemoteToken } from './credentials.js';
+import { normalizeBaseUrl, readCredentials } from './credentials.js';
 import { readConfig } from './config-file.js';
 
 /** Where a command should send its request, or why it cannot proceed. */
@@ -35,14 +37,14 @@ export interface CommandTargetOptions {
 }
 
 function remoteTarget(baseUrl: string, home: string): CommandTarget {
-  const resolved = resolveRemoteToken(baseUrl, home);
-  if ('error' in resolved) {
+  const stored = readCredentials(home);
+  if (stored === null || stored.url !== baseUrl) {
     return {
       kind: 'error',
-      message: `${resolved.error} — run: memhub login --base-url ${baseUrl}`,
+      message: `not logged in to ${baseUrl} — run: memhub login --base-url ${baseUrl}`,
     };
   }
-  return { kind: 'remote', baseUrl, token: resolved.token };
+  return { kind: 'remote', baseUrl, token: stored.token };
 }
 
 /** Resolve the target daemon for a command (see module doc for the order). */
@@ -57,7 +59,13 @@ export function resolveCommandTarget(options: CommandTargetOptions): CommandTarg
   if (options.portSet === true) {
     return localTarget(options.port, options.home);
   }
-  const configured = readConfig(options.home).base_url;
+  let configured: string | undefined;
+  try {
+    configured = readConfig(options.home).base_url;
+  } catch (error) {
+    // A present-but-broken config must block the write, not reroute it.
+    return { kind: 'error', message: error instanceof Error ? error.message : String(error) };
+  }
   if (configured !== undefined) {
     const baseUrl = normalizeBaseUrl(configured);
     if (baseUrl === null) {
