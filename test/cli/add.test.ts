@@ -36,6 +36,7 @@ describe('parseAddArgs', () => {
       cues: [],
       writer: undefined,
       port: 7800,
+      portSet: false,
     });
   });
 
@@ -64,6 +65,7 @@ describe('parseAddArgs', () => {
       cues: ['a', 'b c'],
       writer: 'claude',
       port: 7900,
+      portSet: true,
     });
   });
 
@@ -87,27 +89,34 @@ describe('parseAddArgs', () => {
     expect(() => parseAddArgs(['--title', 'T', '--port', '0'])).toThrow('invalid --port');
   });
 
-  it('parses --url', () => {
-    expect(parseAddArgs(['--title', 'T', '--url', 'https://x.example'])).toEqual({
+  it('parses --base-url', () => {
+    expect(parseAddArgs(['--title', 'T', '--base-url', 'https://x.example'])).toEqual({
       title: 'T',
       body: null,
       type: 'insight',
       cues: [],
       writer: undefined,
       port: 7800,
+      portSet: false,
       url: 'https://x.example',
     });
   });
 
-  it('rejects --url together with --port', () => {
+  it('rejects --base-url together with --port', () => {
     expect(() =>
-      parseAddArgs(['--title', 'T', '--url', 'https://x.example', '-p', '7900'])
+      parseAddArgs(['--title', 'T', '--base-url', 'https://x.example', '-p', '7900'])
     ).toThrow('mutually exclusive');
   });
 
-  it('rejects an invalid --url', () => {
-    expect(() => parseAddArgs(['--title', 'T', '--url', 'ftp://x.example'])).toThrow(
-      'invalid --url'
+  it('rejects an invalid --base-url', () => {
+    expect(() => parseAddArgs(['--title', 'T', '--base-url', 'ftp://x.example'])).toThrow(
+      'invalid --base-url'
+    );
+  });
+
+  it('points old --url usage at the new name', () => {
+    expect(() => parseAddArgs(['--title', 'T', '--url', 'https://x.example'])).toThrow(
+      '--url was renamed to --base-url'
     );
   });
 });
@@ -306,7 +315,76 @@ describe('runAddCommand', () => {
       home,
     });
     expect(code).toBe(1);
-    expect(error.mock.calls.flat().join('\n')).toContain('memhub login https://x.example');
+    expect(error.mock.calls.flat().join('\n')).toContain(
+      'memhub login --base-url https://x.example'
+    );
+  });
+
+  it('routes to the configured remote when no --base-url is given', async () => {
+    const { home } = makeHome();
+    writeFileSync(
+      join(home, 'credentials.json'),
+      JSON.stringify({ version: 1, url: 'https://x.example', token: 'remote-token' })
+    );
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({ version: 1, base_url: 'https://x.example' })
+    );
+    const calls: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        calls.push(String(init?.method ?? 'GET') + ' ' + String(input));
+        return jsonResponse({ id: 1, indexed: false, deduplicated: false }, 202);
+      })
+    );
+    const code = await runAddCommand({
+      title: 'T',
+      body: 'B',
+      type: 'insight',
+      cues: [],
+      writer: undefined,
+      port: 7800,
+      home,
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual(['POST https://x.example/api/cards']);
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('an explicit --port forces the local daemon over config', async () => {
+    const { home } = makeHome();
+    writeFileSync(
+      join(home, 'credentials.json'),
+      JSON.stringify({ version: 1, url: 'https://x.example', token: 'remote-token' })
+    );
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({ version: 1, base_url: 'https://x.example' })
+    );
+    const calls: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        calls.push(String(init?.method ?? 'GET') + ' ' + String(input));
+        return jsonResponse({ id: 1, indexed: false, deduplicated: false }, 202);
+      })
+    );
+    const code = await runAddCommand({
+      title: 'T',
+      body: 'B',
+      type: 'insight',
+      cues: [],
+      writer: undefined,
+      port: 7900,
+      portSet: true,
+      home,
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual(['POST http://127.0.0.1:7900/api/cards']);
+    expect(log).toHaveBeenCalled();
   });
 
   it('prints the error body and a token hint on 401', async () => {

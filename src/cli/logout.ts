@@ -9,6 +9,7 @@
 import { getMemhubHome } from '../paths.js';
 import { remoteApiFetch } from './client.js';
 import { readCredentials, deleteCredentials } from './credentials.js';
+import { readConfig, unsetConfigValue } from './config-file.js';
 
 /** Options for the logout command. */
 export interface LogoutCommandOptions {
@@ -37,6 +38,12 @@ export async function runLogoutCommand(options: LogoutCommandOptions = {}): Prom
     return 1;
   }
   deleteCredentials(home);
+  // The configured default routes here too — leaving it behind would make
+  // plain `memhub add` fail with "not logged in" after a logout.
+  if (readConfig(home).base_url === stored.url) {
+    unsetConfigValue(home, 'base-url');
+    console.log(`Unset the default base-url (was ${stored.url}).`);
+  }
   if (result.status === 401 || result.status === 400) {
     console.log(`Logged out from ${stored.url} (the stored token was already invalid there).`);
   } else {

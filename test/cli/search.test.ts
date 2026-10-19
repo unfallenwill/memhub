@@ -34,6 +34,7 @@ describe('parseSearchArgs', () => {
       mode: 'auto',
       limit: 10,
       port: 7800,
+      portSet: false,
     });
   });
 
@@ -43,6 +44,7 @@ describe('parseSearchArgs', () => {
       mode: 'keyword',
       limit: 5,
       port: 7900,
+      portSet: true,
     });
   });
 
@@ -58,18 +60,25 @@ describe('parseSearchArgs', () => {
     expect(() => parseSearchArgs(['q', 'extra'])).toThrow('unexpected argument');
   });
 
-  it('parses --url and rejects it together with --port', () => {
-    expect(parseSearchArgs(['q', '--url', 'https://x.example'])).toEqual({
+  it('parses --base-url and rejects it together with --port', () => {
+    expect(parseSearchArgs(['q', '--base-url', 'https://x.example'])).toEqual({
       query: 'q',
       mode: 'auto',
       limit: 10,
       port: 7800,
+      portSet: false,
       url: 'https://x.example',
     });
-    expect(() => parseSearchArgs(['q', '--url', 'https://x.example', '--port', '7900'])).toThrow(
-      'mutually exclusive'
+    expect(() =>
+      parseSearchArgs(['q', '--base-url', 'https://x.example', '--port', '7900'])
+    ).toThrow('mutually exclusive');
+    expect(() => parseSearchArgs(['q', '--base-url', 'nonsense'])).toThrow('invalid --base-url');
+  });
+
+  it('points old --url usage at the new name', () => {
+    expect(() => parseSearchArgs(['q', '--url', 'https://x.example'])).toThrow(
+      '--url was renamed to --base-url'
     );
-    expect(() => parseSearchArgs(['q', '--url', 'nonsense'])).toThrow('invalid --url');
   });
 
   it('rejects an invalid mode', () => {
@@ -201,6 +210,60 @@ describe('runSearchCommand', () => {
       home: makeHome().home,
     });
     expect(code).toBe(1);
-    expect(error.mock.calls.flat().join('\n')).toContain('memhub login https://x.example');
+    expect(error.mock.calls.flat().join('\n')).toContain(
+      'memhub login --base-url https://x.example'
+    );
+  });
+
+  it('routes to the configured remote when no --base-url is given', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'memhub-search-test-'));
+    homes.push(home);
+    writeFileSync(
+      join(home, 'credentials.json'),
+      JSON.stringify({ version: 1, url: 'https://x.example', token: 'remote-token' })
+    );
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({ version: 1, base_url: 'https://x.example' })
+    );
+    const fetchMock = vi.fn(async () => jsonResponse({ results: [], mode_used: 'keyword' }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const code = await runSearchCommand({
+      query: 'q',
+      mode: 'auto',
+      limit: 10,
+      port: 7800,
+      home,
+    });
+    expect(code).toBe(0);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://x.example/api/search');
+    expect((init.headers as Record<string, string>)['x-memhub-token']).toBe('remote-token');
+  });
+
+  it('an explicit --port forces the local daemon over config', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'memhub-search-test-'));
+    homes.push(home);
+    writeFileSync(join(home, 'token'), 'local-token');
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({ version: 1, base_url: 'https://x.example' })
+    );
+    const fetchMock = vi.fn(async () => jsonResponse({ results: [], mode_used: 'keyword' }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const code = await runSearchCommand({
+      query: 'q',
+      mode: 'auto',
+      limit: 10,
+      port: 7900,
+      portSet: true,
+      home,
+    });
+    expect(code).toBe(0);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:7900/api/search');
+    expect((init.headers as Record<string, string>)['x-memhub-token']).toBe('local-token');
   });
 });

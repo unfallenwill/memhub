@@ -18,6 +18,7 @@ import {
   resolveRemoteToken,
   writeCredentials,
 } from '../../src/cli/credentials.js';
+import { readConfig, writeConfig } from '../../src/cli/config-file.js';
 import { getCredentialsPath, getMemhubHome } from '../../src/paths.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -80,7 +81,9 @@ describe('credentials store', () => {
     writeCredentials(home, { version: 1, url: 'https://x.example', token: 'a'.repeat(64) });
     if (process.platform !== 'win32') {
       chmodSync(path, 0o644);
-      writeCredentials(home, { version: 1, url: 'https://y.example', token: 'b'.repeat(64) });
+    }
+    writeCredentials(home, { version: 1, url: 'https://y.example', token: 'b'.repeat(64) });
+    if (process.platform !== 'win32') {
       expect(statSync(path).mode & 0o777).toBe(0o600);
     }
     expect(readCredentials(home)?.url).toBe('https://y.example');
@@ -154,6 +157,42 @@ describe('runLogoutCommand', () => {
     expect(await runLogoutCommand({ home })).toBe(0);
     expect(readCredentials(home)).toBeNull();
     expect(logs.join('\n')).toContain('Logged out from https://x.example');
+  });
+
+  it('unsets the configured default base-url when it matched', async () => {
+    writeCredentials(home, { version: 1, url: 'https://x.example', token: 't'.repeat(64) });
+    writeConfig(home, { version: 1, base_url: 'https://x.example' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ ok: true }))
+    );
+    expect(await runLogoutCommand({ home })).toBe(0);
+    expect(readConfig(home)).toEqual({ version: 1 });
+    expect(logs.join('\n')).toContain('Unset the default base-url');
+  });
+
+  it('keeps the configured base-url when it points elsewhere', async () => {
+    writeCredentials(home, { version: 1, url: 'https://x.example', token: 't'.repeat(64) });
+    writeConfig(home, { version: 1, base_url: 'https://other.example' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ ok: true }))
+    );
+    expect(await runLogoutCommand({ home })).toBe(0);
+    expect(readConfig(home).base_url).toBe('https://other.example');
+  });
+
+  it('keeps the config when the server is unreachable', async () => {
+    writeCredentials(home, { version: 1, url: 'https://x.example', token: 't'.repeat(64) });
+    writeConfig(home, { version: 1, base_url: 'https://x.example' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('ECONNREFUSED');
+      })
+    );
+    expect(await runLogoutCommand({ home })).toBe(1);
+    expect(readConfig(home).base_url).toBe('https://x.example');
   });
 
   it('still deletes the file when the token was already invalid', async () => {

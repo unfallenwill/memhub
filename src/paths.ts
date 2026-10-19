@@ -105,6 +105,11 @@ export function getCredentialsPath(home: string = getMemhubHome()): string {
   return join(home, 'credentials.json');
 }
 
+/** Path of the CLI configuration file (memhub config). */
+export function getConfigPath(home: string = getMemhubHome()): string {
+  return join(home, 'config.json');
+}
+
 /** Path of the LanceDB vector store inside a MemHub home directory. */
 export function getLanceDbPath(home: string = getMemhubHome()): string {
   return join(home, 'lancedb');

@@ -36,7 +36,7 @@ export default function DevicesView() {
         <h1 class="view-title">Devices</h1>
         <p class="error">
           This MemHub server requires a login. Run{' '}
-          <code>memhub login &lt;server URL&gt;</code> on a device to authorize it.
+          <code>memhub login --base-url &lt;server URL&gt;</code> on a device to authorize it.
         </p>
       </section>
     );

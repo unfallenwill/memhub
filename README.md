@@ -84,8 +84,9 @@ hook (curl) ──► HTTP API ──► SQLite (cards, events, activity log)   
 | `memhub reindex` | Rebuild the vector index from SQLite (needs the semantic stack) |
 | `memhub add [options]` | Write a card (agent-facing; stdin body supported) |
 | `memhub search <query> [options]` | Search cards, print one-line JSON |
-| `memhub login <url>` | Log in to a remote daemon (device flow) |
+| `memhub login [--base-url <url>]` | Log in to a remote daemon (device flow) |
 | `memhub logout` | Revoke the stored login token |
+| `memhub config <set\|get\|list\|unset> base-url` | Default remote target for `add`/`search` |
 | `memhub reset-password` | Clear the admin password (on the server) |
 
 | API | Description |
@@ -111,6 +112,8 @@ Card types: `fact | preference | decision | insight | pattern`. Full reference: 
 
 The daemon is local-first by default: loopback bind, local-only Host headers, generated token. The last three variables opt into cloud/container deployments — see [docs/user-guide.md](docs/user-guide.md).
 
+`add`/`search` pick their target in this order: an explicit `--base-url`, then an explicit `--port` (always the local daemon), then the `base-url` set with `memhub config set base-url <url>`, then the local daemon.
+
 ## Docker
 
 ```bash
@@ -120,7 +123,7 @@ docker run -d -p 7800:7800 -v memhub-data:/data \
   memhub
 ```
 
-Data persists under `/data` (SQLite, vector index, model cache). After deploying, `memhub login https://memhub.example.com` from any machine — the first login sets the admin password in the browser (protected by a one-time setup code from the server's `/data/setup-code`) and issues per-device tokens (revocable from the web UI's Devices page). Details: [docs/user-guide.md](docs/user-guide.md#docker).
+Data persists under `/data` (SQLite, vector index, model cache). After deploying, run `memhub login --base-url https://memhub.example.com` from any machine — the first login sets the admin password in the browser (protected by a one-time setup code from the server's `/data/setup-code`) and issues per-device tokens (revocable from the web UI's Devices page). Make it the default target with `memhub config set base-url https://memhub.example.com` and plain `memhub add`/`memhub search` go remote. Details: [docs/user-guide.md](docs/user-guide.md#docker).
 
 ## Development
 

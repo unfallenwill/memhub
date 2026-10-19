@@ -7,11 +7,11 @@
  */
 
 import { SEARCH_MODES, type SearchMode } from '../db/types.js';
-import { resolveExistingToken } from '../daemon/token.js';
-import { getMemhubHome, getTokenPath } from '../paths.js';
+import { getMemhubHome } from '../paths.js';
 import { parsePortValue } from './args.js';
 import { postApiJson, printApiFailure, remoteApiFetch } from './client.js';
-import { normalizeBaseUrl, resolveRemoteToken } from './credentials.js';
+import { normalizeBaseUrl } from './credentials.js';
+import { resolveCommandTarget } from './target.js';
 
 /** Options for the search command. */
 export interface SearchCommandOptions {
@@ -19,8 +19,10 @@ export interface SearchCommandOptions {
   readonly mode: SearchMode;
   readonly limit: number;
   readonly port: number;
-  /** Remote daemon base URL (memhub login target); local when unset. */
+  /** Explicit remote base URL; overrides the config default, beats --port. */
   readonly url?: string | undefined;
+  /** True when --port/-p was passed explicitly (forces the local daemon). */
+  readonly portSet?: boolean | undefined;
   /** Data directory override (tests). */
   readonly home?: string | undefined;
 }
@@ -57,8 +59,10 @@ export function parseSearchArgs(argv: readonly string[]): SearchCommandOptions {
     } else if (arg === '--port' || arg === '-p') {
       port = parsePortValue(argv[++i]);
       portSet = true;
+    } else if (arg === '--base-url') {
+      url = requireSearchValue('--base-url', argv[++i]);
     } else if (arg === '--url') {
-      url = requireSearchValue('--url', argv[++i]);
+      throw new Error('--url was renamed to --base-url');
     } else if (arg.startsWith('--')) {
       throw new Error(`unknown option for search: ${arg}`);
     } else if (query === undefined) {
@@ -71,12 +75,12 @@ export function parseSearchArgs(argv: readonly string[]): SearchCommandOptions {
     throw new Error('a search query is required: memhub search "<query>"');
   }
   if (url !== undefined && normalizeBaseUrl(url) === null) {
-    throw new Error(`invalid --url value: ${url}`);
+    throw new Error(`invalid --base-url value: ${url}`);
   }
   if (url !== undefined && portSet) {
-    throw new Error('--url and --port are mutually exclusive');
+    throw new Error('--base-url and --port are mutually exclusive');
   }
-  return { query, mode, limit, port, url };
+  return { query, mode, limit, port, portSet, url };
 }
 
 function requireSearchValue(name: string, value: string | undefined): string {
@@ -94,35 +98,26 @@ export async function runSearchCommand(options: SearchCommandOptions): Promise<n
     limit: options.limit,
   };
 
-  if (options.url !== undefined) {
-    const baseUrl = normalizeBaseUrl(options.url);
-    if (baseUrl === null) {
-      console.error(`Invalid server URL: ${options.url}`);
-      return 1;
-    }
-    const resolved = resolveRemoteToken(baseUrl, options.home ?? getMemhubHome());
-    if ('error' in resolved) {
-      console.error(`${resolved.error} — run: memhub login ${baseUrl}`);
-      return 1;
-    }
-    const result = await remoteApiFetch(baseUrl, resolved.token, 'POST', '/api/search', payload);
-    if (result.kind !== 'ok' || result.status !== 200) {
-      printApiFailure(result, baseUrl);
-      return 1;
-    }
-    console.log(JSON.stringify(result.body));
-    return 0;
-  }
-
-  const token = resolveExistingToken(getTokenPath(options.home ?? getMemhubHome()));
-  if (token === null) {
-    console.error('No MemHub token found — start the daemon first: memhub server');
+  const target = resolveCommandTarget({
+    url: options.url,
+    port: options.port,
+    portSet: options.portSet,
+    home: options.home ?? getMemhubHome(),
+  });
+  if (target.kind === 'error') {
+    console.error(target.message);
     return 1;
   }
 
-  const result = await postApiJson(options.port, token, '/api/search', payload);
+  const result =
+    target.kind === 'remote'
+      ? await remoteApiFetch(target.baseUrl, target.token, 'POST', '/api/search', payload)
+      : await postApiJson(target.port, target.token, '/api/search', payload);
   if (result.kind !== 'ok' || result.status !== 200) {
-    printApiFailure(result, `http://127.0.0.1:${options.port}`);
+    printApiFailure(
+      result,
+      target.kind === 'remote' ? target.baseUrl : `http://127.0.0.1:${target.port}`
+    );
     return 1;
   }
   console.log(JSON.stringify(result.body));

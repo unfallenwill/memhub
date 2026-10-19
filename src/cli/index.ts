@@ -9,14 +9,16 @@
  *   memhub reindex                                rebuild the vector index
  *   memhub add [options]                          write a memory card
  *   memhub search <query> [options]               search cards
- *   memhub login <url>                            authorize against a remote daemon
+ *   memhub login [--base-url <url>]               authorize against a remote daemon
  *   memhub logout                                 revoke the stored login token
+ *   memhub config <set|get|list|unset> [key]      read/write CLI options
  *   memhub reset-password                         clear the admin password (server-side)
  *   memhub --help / --version
  */
 
 import { getVersion } from '../version.js';
 import { parseAddArgs, runAddCommand } from './add.js';
+import { parseConfigArgs, runConfigCommand } from './config.js';
 import { runLoginCommand, parseLoginArgs } from './login.js';
 import { runLogoutCommand } from './logout.js';
 import { runReindexCommand } from './reindex.js';
@@ -36,8 +38,9 @@ Usage:
   memhub reindex                                Rebuild the vector index from SQLite
   memhub add [options]                          Write a memory card (agent-facing)
   memhub search <query> [options]               Search cards, print one-line JSON
-  memhub login <url>                            Log in to a remote daemon (device flow)
+  memhub login [--base-url <url>]               Log in to a remote daemon (device flow)
   memhub logout                                 Revoke the stored login token
+  memhub config <set|get|list|unset> [key]      Configure the CLI (key: base-url)
   memhub reset-password                         Clear the admin password (on the server)
   memhub --help                                 Show this help message
   memhub --version                              Show version
@@ -52,12 +55,16 @@ memhub add options:
   --type <type>          fact | preference | decision | insight | pattern (default insight)
   --cues <text>          Retrieval cue; repeat the flag for multiple cues
   --writer <name>        Who wrote the card (e.g. the agent's name)
-  --url <url>            Remote daemon (memhub login target) instead of local
+  --base-url <url>       Remote daemon (memhub login target) instead of local
 
 memhub search options:
   --mode <mode>          auto | semantic | keyword (default auto)
   --limit <number>       Max results, 1-100 (default 10)
-  --url <url>            Remote daemon (memhub login target) instead of local
+  --base-url <url>       Remote daemon (memhub login target) instead of local
+
+Target resolution for add/search: an explicit --base-url wins, then an
+explicit --port (always the local daemon), then the configured default
+(memhub config set base-url <url>), then the local daemon.
 
 Environment:
   MEMHUB_HOME            Data directory (default ~/.memhub)
@@ -137,6 +144,9 @@ async function main(): Promise<number> {
       throw new Error(`unknown option for logout: ${rest[0]}`);
     }
     return runLogoutCommand();
+  }
+  if (command === 'config') {
+    return runConfigCommand(parseConfigArgs(rest));
   }
   if (command === 'reset-password') {
     if (rest.length > 0) {

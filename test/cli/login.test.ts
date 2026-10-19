@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,10 +23,14 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe('parseLoginArgs', () => {
-  it('requires exactly one URL', () => {
-    expect(parseLoginArgs(['https://x.example']).url).toBe('https://x.example');
-    expect(() => parseLoginArgs([])).toThrow(/usage/);
-    expect(() => parseLoginArgs(['a', 'b'])).toThrow(/usage/);
+  it('parses --base-url and allows omitting it', () => {
+    expect(parseLoginArgs(['--base-url', 'https://x.example']).url).toBe('https://x.example');
+    expect(parseLoginArgs([]).url).toBeUndefined();
+  });
+
+  it('rejects bare positional arguments with the new syntax', () => {
+    expect(() => parseLoginArgs(['https://x.example'])).toThrow('--base-url');
+    expect(() => parseLoginArgs(['--nope'])).toThrow('unexpected argument');
   });
 });
 
@@ -64,6 +68,26 @@ describe('runLoginCommand', () => {
     const code = await runLoginCommand({ url: 'not a url', home });
     expect(code).toBe(1);
     expect(errors[0]).toContain('Invalid server URL');
+  });
+
+  it('prints usage when no URL is given and none is configured', async () => {
+    const code = await runLoginCommand({ home });
+    expect(code).toBe(1);
+    expect(errors.join('\n')).toContain('usage: memhub login --base-url <url>');
+  });
+
+  it('falls back to the configured base-url when no URL is given', async () => {
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({ version: 1, base_url: 'https://x.example' })
+    );
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    const code = await runLoginCommand({ home, fetchImpl });
+    expect(code).toBe(1);
+    const requested = String((fetchImpl.mock.calls[0] as unknown[])[0]);
+    expect(requested).toContain('https://x.example/healthz');
   });
 
   it('exits 1 when the server is unreachable', async () => {
@@ -117,6 +141,7 @@ describe('runLoginCommand', () => {
     expect(logs.join('\n')).toContain('ABCD-1234');
     expect(logs.join('\n')).toContain('no admin password yet');
     expect(logs.join('\n')).toContain('Logged in to https://x.example');
+    expect(logs.join('\n')).toContain('memhub config set base-url https://x.example');
     const stored = JSON.parse(readFileSync(getCredentialsPath(home), 'utf-8')) as {
       url: string;
       token: string;

@@ -1,21 +1,25 @@
 /**
- * `memhub login <url>` command.
+ * `memhub login --base-url <url>` command.
  *
  * Runs the OAuth 2.1 device flow against a remote daemon: requests a
  * device code, opens the browser at the verification page (or prints
  * the URL when no browser can be launched), polls until the user
  * approves, then stores the token in <home>/credentials.json.
+ * Without --base-url the configured default (memhub config) is used.
  */
 
 import { hostname, userInfo } from 'os';
 import { getMemhubHome } from '../paths.js';
+import { requireValue } from './args.js';
 import { probeHealthzUrl, remoteApiFetch } from './client.js';
 import { normalizeBaseUrl, writeCredentials } from './credentials.js';
+import { readConfig } from './config-file.js';
 import { openBrowser } from './open-browser.js';
 
 /** Options for the login command. */
 export interface LoginCommandOptions {
-  readonly url: string;
+  /** Remote daemon base URL; falls back to the config default when unset. */
+  readonly url?: string | undefined;
   /** Data directory override (tests). */
   readonly home?: string | undefined;
   /** fetch override (tests). */
@@ -28,10 +32,16 @@ export interface LoginCommandOptions {
 
 /** Parse `memhub login` arguments. Throws on invalid input. */
 export function parseLoginArgs(argv: readonly string[]): LoginCommandOptions {
-  if (argv.length !== 1) {
-    throw new Error('usage: memhub login <url>  (e.g. memhub login https://memhub.example.com)');
+  let url: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--base-url') {
+      url = requireValue('--base-url', argv[++i]);
+    } else {
+      throw new Error(`unexpected argument: ${arg} — use: memhub login --base-url <url>`);
+    }
   }
-  return { url: argv[0] };
+  return { url };
 }
 
 interface DeviceCodeResponse {
@@ -57,9 +67,16 @@ function deviceLabel(): string {
 
 /** Run the login command. Returns the process exit code. */
 export async function runLoginCommand(options: LoginCommandOptions): Promise<number> {
-  const baseUrl = normalizeBaseUrl(options.url);
+  const home = options.home ?? getMemhubHome();
+  const rawUrl = options.url ?? readConfig(home).base_url;
+  if (rawUrl === undefined) {
+    console.error('usage: memhub login --base-url <url>');
+    console.error('e.g. memhub login --base-url https://memhub.example.com');
+    return 1;
+  }
+  const baseUrl = normalizeBaseUrl(rawUrl);
   if (baseUrl === null) {
-    console.error(`Invalid server URL: ${options.url}`);
+    console.error(`Invalid server URL: ${rawUrl}`);
     console.error('Expected something like https://memhub.example.com (no path).');
     return 1;
   }
@@ -166,10 +183,10 @@ export async function runLoginCommand(options: LoginCommandOptions): Promise<num
     return 1;
   }
 
-  const home = options.home ?? getMemhubHome();
   writeCredentials(home, { version: 1, url: baseUrl, token: accessToken });
   console.log('');
   console.log(`Logged in to ${baseUrl} (MemHub v${probe.info.version}).`);
-  console.log(`Token saved. Use: memhub add --url ${baseUrl} ...`);
+  console.log(`Token saved. Use: memhub add --base-url ${baseUrl} ...`);
+  console.log(`Or make it the default: memhub config set base-url ${baseUrl}`);
   return 0;
 }

@@ -22,20 +22,21 @@ Restart the daemon afterwards; it detects them at startup and starts indexing in
 
 ## Commands
 
-| Command                       | Description                                                     |
-| ----------------------------- | --------------------------------------------------------------- |
-| `memhub server`               | Start the daemon in the background (detached)                   |
-| `memhub server --foreground`  | Run the daemon in the current process (for debugging)           |
-| `memhub server --port 7900`   | Pick a different port                                           |
-| `memhub status [--port]`      | Ping `/healthz` and print pid, uptime, stats                    |
-| `memhub stop [--port]`        | Graceful shutdown; force-kills after 5 seconds                  |
-| `memhub reindex`              | Rebuild the vector index from SQLite (needs the semantic stack) |
-| `memhub add [options]`        | Write a card; prints the JSON result (agent-facing)             |
-| `memhub search <query> [opt]` | Search cards; prints one line of JSON (agent-facing)            |
-| `memhub login <url>`          | Log in to a remote daemon (device flow, see below)              |
-| `memhub logout`               | Revoke the stored login token                                   |
-| `memhub reset-password`       | Clear the admin password (run on the server)                    |
-| `memhub --help` / `--version` | Usage and version                                               |
+| Command                                          | Description                                                     |
+| ------------------------------------------------ | --------------------------------------------------------------- |
+| `memhub server`                                  | Start the daemon in the background (detached)                   |
+| `memhub server --foreground`                     | Run the daemon in the current process (for debugging)           |
+| `memhub server --port 7900`                      | Pick a different port                                           |
+| `memhub status [--port]`                         | Ping `/healthz` and print pid, uptime, stats                    |
+| `memhub stop [--port]`                           | Graceful shutdown; force-kills after 5 seconds                  |
+| `memhub reindex`                                 | Rebuild the vector index from SQLite (needs the semantic stack) |
+| `memhub add [options]`                           | Write a card; prints the JSON result (agent-facing)             |
+| `memhub search <query> [opt]`                    | Search cards; prints one line of JSON (agent-facing)            |
+| `memhub login [--base-url <url>]`                | Log in to a remote daemon (device flow, see below)              |
+| `memhub logout`                                  | Revoke the stored login token                                   |
+| `memhub config <set\|get\|list\|unset> base-url` | Read/write CLI options (default remote target)                  |
+| `memhub reset-password`                          | Clear the admin password (run on the server)                    |
+| `memhub --help` / `--version`                    | Usage and version                                               |
 
 Starting `memhub server` when a daemon is already running prints the running pid and exits with code 0. If another program owns the port, MemHub suggests `--port` and exits with code 1.
 
@@ -176,7 +177,7 @@ localStorage.setItem('memhub.token', '<contents of ~/.memhub/token>');
 When the daemon runs on another machine (see [Docker](#docker)), CLI commands authenticate with a per-device token obtained via an OAuth 2.1 device flow (RFC 8628) — the same protocol `gh auth login` uses.
 
 ```bash
-memhub login https://memhub.example.com
+memhub login --base-url https://memhub.example.com
 # → prints a code, opens the browser
 # → first login ever: the page asks you to SET the admin password
 # → later logins: the page asks for that password
@@ -185,7 +186,8 @@ memhub login https://memhub.example.com
 
 How it works:
 
-- `memhub login` stores `{url, token}` in `~/.memhub/credentials.json` (0600). Afterwards `memhub add --url https://memhub.example.com ...` and `memhub search --url ...` target the remote daemon with that token.
+- `memhub login` stores `{url, token}` in `~/.memhub/credentials.json` (0600). Afterwards `memhub add --base-url https://memhub.example.com ...` and `memhub search --base-url ...` target the remote daemon with that token.
+- **Default target**: `memhub config set base-url https://memhub.example.com` makes the remote the default — plain `memhub add`/`memhub search` (no flags) then talk to it. `add`/`search` pick their target in this order: an explicit `--base-url`, then an explicit `--port` (always the local daemon), then the configured `base-url`, then the local daemon. `memhub config get/list/unset base-url` read and clear it; `memhub logout` clears it too when it points at the logged-out server.
 - There is **no preset admin password**: the very first login bootstraps it in the browser. It is protected by a one-time **setup code** the daemon writes to `setup-code` in its data directory (and prints at startup): completing the first login requires that code, so only someone with access to the server itself can claim a fresh deployment. The code file is deleted once the password is set.
 - The browser receives the same token via a URL fragment and the web UI stores it in `localStorage`; remote web sessions are device sessions.
 - Passwords are stored as scrypt hashes; tokens are stored as SHA-256 hashes — neither the password nor a usable token is ever written to the database.
@@ -194,7 +196,7 @@ How it works:
 - **Forgot the password**: on the server, run `memhub stop` and then `memhub reset-password`. It clears the admin password (the next login re-runs setup) and revokes every device token.
 - Rate limits: 5 failed password attempts per minute per IP, 3 wrong attempts per login code, 5-minute code expiry, at most 10 pending login codes per IP. The limits key on the TCP peer address: behind a reverse proxy every visitor shares one bucket, and an attacker through the same proxy can briefly lock out logins for everyone behind it — put a per-client rate limit on the proxy too when this matters.
 
-`memhub status` and `memhub stop` always manage the **local** daemon; remote cards are read/written through `add`/`search --url`.
+`memhub status` and `memhub stop` always manage the **local** daemon; remote cards are read/written through `add`/`search` (via `--base-url` or the configured default).
 
 ## Storage
 
@@ -205,6 +207,7 @@ How it works:
   - `lancedb/` — the vector index (derived; rebuild with `memhub reindex`)
   - `models/` — the cached ONNX embedding model
   - `credentials.json` — the remote login token written by `memhub login` (0600)
+  - `config.json` — CLI options written by `memhub config` (the default remote target)
 - Cards are rows in SQLite; the FTS index and the vector index are derived artifacts that can be rebuilt at any time.
 
 ## Environment Variables
@@ -246,8 +249,9 @@ curl -H "Host: memhub.example.com" http://localhost:7800/healthz
 After deploying, complete the first login from any machine (this also sets the admin password):
 
 ```bash
-memhub login https://memhub.example.com
-memhub add --url https://memhub.example.com --title "..." --body "..."
+memhub login --base-url https://memhub.example.com
+memhub config set base-url https://memhub.example.com   # optional: make it the default
+memhub add --title "..." --body "..."                   # → remote (no --base-url needed)
 ```
 
 Do this promptly: the first completed login defines the server's admin password. The login page will ask for the **setup code** — read it on the server with `docker exec memhub cat /data/setup-code` (or from the container logs); the code proves you own the server, and the file is deleted after setup.
@@ -255,8 +259,8 @@ Do this promptly: the first completed login defines the server's admin password.
 ## Troubleshooting
 
 - **`Port 7800 is already in use by another program`** — start with `--port`.
-- **`401 unauthorized`** — send the token from `~/.memhub/token` (or `MEMHUB_TOKEN`) as `X-Memhub-Token`; on remote daemons log in first (`memhub login <url>`).
-- **`403 invalid_host`** — local Host values (`localhost`, `127.0.0.1`) are only accepted when the connection actually originates on the machine. For remote daemons, Docker published ports seen from the host, VMs and proxies, put your hostname in `MEMHUB_ALLOWED_HOSTS` and send it (e.g. `curl -H "Host: memhub.example.com" http://<host>:7800/healthz` or `memhub login https://memhub.example.com`).
+- **`401 unauthorized`** — send the token from `~/.memhub/token` (or `MEMHUB_TOKEN`) as `X-Memhub-Token`; on remote daemons log in first (`memhub login --base-url <url>`).
+- **`403 invalid_host`** — local Host values (`localhost`, `127.0.0.1`) are only accepted when the connection actually originates on the machine. For remote daemons, Docker published ports seen from the host, VMs and proxies, put your hostname in `MEMHUB_ALLOWED_HOSTS` and send it (e.g. `curl -H "Host: memhub.example.com" http://<host>:7800/healthz` or `memhub login --base-url https://memhub.example.com`).
 - **`503 index_not_ready`** — the embedding model is still loading (or its download failed); keyword and `auto` search keep working.
 - **`501 semantic_not_installed`** — the optional semantic packages are not installed. The daemon runs keyword-only; install `@huggingface/transformers` and `@lancedb/lancedb` next to memhub (e.g. `npm install -g @huggingface/transformers @lancedb/lancedb`) and restart. `memhub reindex` needs them too.
 - **`The login code expired`** — the 5-minute window elapsed (or the daemon restarted, which drops in-flight logins). Run `memhub login` again.

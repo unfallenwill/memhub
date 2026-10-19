@@ -154,7 +154,7 @@ ${message}`;
     body = `
 <h1>MemHub</h1>
 <p>Remote login is not set up yet. Start it from a device:</p>
-<pre>memhub login &lt;this server URL&gt;</pre>
+<pre>memhub login --base-url &lt;this server URL&gt;</pre>
 <p class="hint">The first login sets the admin password and needs the setup code
 from the server's MemHub data directory, so it must be started by the server
 owner from a CLI.</p>`;
