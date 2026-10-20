@@ -1,6 +1,6 @@
 {
-  "name": "memhub",
-  "version": "1.0.0",
+  "name": "@synth-coder/memhub",
+  "version": "0.5.0",
   "description": "Local-first memory card daemon for AI coding agents",
   "type": "module",
   "main": "dist/src/index.js",
@@ -22,7 +22,8 @@
     "memhub": "dist/src/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "node scripts/clean-dist.mjs",
+    "build": "pnpm run clean && tsc",
     "build:web": "pnpm --filter memhub-web run build",
     "dev": "tsc --watch",
     "dev:web": "pnpm --filter memhub-web run dev",
@@ -37,7 +38,7 @@
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"docs/**/*.md\"",
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "quality": "pnpm run lint && pnpm run typecheck && pnpm run format:check && pnpm run test:coverage && pnpm run build",
-    "prepack": "pnpm run build",
+    "prepack": "pnpm run build && pnpm run build:web",
     "ci": "pnpm run quality"
   },
   "keywords": [
@@ -48,6 +49,14 @@
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/unfallenwill/memhub.git"
+  },
+  "homepage": "https://github.com/unfallenwill/memhub#readme",
+  "bugs": {
+    "url": "https://github.com/unfallenwill/memhub/issues"
+  },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
     "hono": "^4.6.14",
