@@ -49,7 +49,7 @@ When unsure, don't write. A few high-signal cards beat many noisy ones.
 
 The daemon must be running on 127.0.0.1:7800 — check with `memhub status`,
 start with `memhub server` if it is down. If memhub is not installed,
-`npx -y memhub@latest <command>` works for every command below.
+`npx -y @synth-coder/memhub@latest <command>` works for every command below.
 
 Search (returns one line of JSON: results with score, matched_by, mode_used):
 

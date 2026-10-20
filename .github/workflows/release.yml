@@ -63,13 +63,10 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      # The published package serves the web UI from web/dist; without
-      # this step the tarball would ship no UI at all.
-      - name: Build web UI
-        run: pnpm --filter memhub-web run build
-
+      # The published package serves the web UI from web/dist; the
+      # prepack script builds it, so the tarball always ships the UI.
       - name: Publish to npm
-        run: pnpm publish --no-git-checks
+        run: pnpm publish --no-git-checks --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

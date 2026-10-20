@@ -17,7 +17,7 @@ MemHub 只提供**机制**（存、取、索引、审计）。生命周期策略
 ## 快速开始
 
 ```bash
-npm install -g memhub
+npm install -g @synth-coder/memhub
 memhub server          # 启动守护进程（后台，127.0.0.1:7800）
 npx skills add unfallenwill/memhub -g   # 可选：教会你的 agent 使用它
 ```

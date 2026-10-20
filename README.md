@@ -17,7 +17,7 @@ MemHub provides the **mechanism** (store, index, retrieve, audit). Lifecycle pol
 ## Quick start
 
 ```bash
-npm install -g memhub
+npm install -g @synth-coder/memhub
 memhub server          # start the daemon (background, 127.0.0.1:7800)
 npx skills add unfallenwill/memhub -g   # optional: teach your agent to use it
 ```

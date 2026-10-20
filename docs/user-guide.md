@@ -5,9 +5,9 @@ MemHub is a local memory card daemon for AI coding agents. Agents write memories
 ## Quick Start
 
 ```bash
-npx -y memhub@latest server   # Start the daemon in the background (default port 7800)
-npx -y memhub@latest status   # Show daemon status, card counts and queue backlog
-npx -y memhub@latest stop     # Ask the daemon to shut down
+npx -y @synth-coder/memhub@latest server   # Start the daemon in the background (default port 7800)
+npx -y @synth-coder/memhub@latest status   # Show daemon status, card counts and queue backlog
+npx -y @synth-coder/memhub@latest stop     # Ask the daemon to shut down
 ```
 
 The daemon listens on `127.0.0.1` only. All API requests (except `GET /healthz`) must carry the token stored in `~/.memhub/token` in the `X-Memhub-Token` header.
@@ -162,7 +162,7 @@ The daemon serves a small read-only management page at `http://127.0.0.1:7800/`:
 The page is a Preact SPA whose build output lives in `web/dist`. On loopback daemons the daemon injects the API token into `index.html` at serve time (build-time placeholder, no token is ever written into the build output). Daemons bound to a non-loopback address never embed the token — their web sessions use a device token from `memhub login` (the login success page hands the token to the SPA via a URL fragment). When the web UI has not been built, `GET /` answers `404 web_ui_not_built`.
 
 ```bash
-npx pnpm run build:web    # build web/dist (run before publishing)
+npx pnpm run build:web    # build web/dist (the prepack script runs this on publish)
 npx pnpm run dev:web      # vite dev server on :5173, proxying /api to the daemon
 ```
 
