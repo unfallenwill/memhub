@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runLogoutCommand } from '../../src/cli/logout.js';
+import { runLogoutCommand } from '../../src/cli/commands/logout.js';
 import {
   deleteCredentials,
   normalizeBaseUrl,

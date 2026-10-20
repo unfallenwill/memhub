@@ -30,7 +30,7 @@ describe('runRetentionCleanup', () => {
     try {
       seed(t);
       const offset = 4; // events 1-3 are "consumed"
-      const deleted = runRetentionCleanup(t.db, offset, now);
+      const deleted = runRetentionCleanup(t.events, offset, now);
       expect(deleted).toBe(1); // only event 1 matches every condition
 
       const remaining = t.events.listAll().map(e => e.id);
@@ -46,7 +46,7 @@ describe('runRetentionCleanup', () => {
       seed(t);
       t.cards.createCard(cardInput({ title: 'T', body: 'B' }));
       const before = t.activity.list(null, 100).entries.length;
-      runRetentionCleanup(t.db, 6, now);
+      runRetentionCleanup(t.events, 6, now);
       expect(t.activity.list(null, 100).entries.length).toBe(before);
     } finally {
       t.close();
@@ -57,7 +57,7 @@ describe('runRetentionCleanup', () => {
     const t = createTestDb();
     try {
       seed(t);
-      expect(runRetentionCleanup(t.db, 0, now)).toBe(0);
+      expect(runRetentionCleanup(t.events, 0, now)).toBe(0);
       expect(t.events.listAll()).toHaveLength(6);
     } finally {
       t.close();

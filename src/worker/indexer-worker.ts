@@ -19,23 +19,26 @@
  * the idempotent vector writes make reprocessing harmless.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
-import { ActivityLog } from '../db/activity.js';
-import { CardStore } from '../db/cards.js';
-import { withTransaction } from '../db/database.js';
-import { EventStore, type EventRow } from '../db/events.js';
-import type { CardRecord } from '../db/types.js';
-import { WorkerStateStore } from '../db/worker-state.js';
-import type { EmbeddingProvider } from '../embedding/embedder.js';
-import type { CardVectorStore } from '../storage/vector-index.js';
+import type { CardRecord, EventRow } from '../core/domain/types.js';
+import { errorMessage } from '../core/util/errors.js';
+import { logDaemonError } from '../core/util/log.js';
+import { sleep } from '../core/util/sleep.js';
+import type { EmbeddingProvider } from '../core/ports/embedding.js';
+import type { VectorStore } from '../core/ports/vector.js';
 import { cardEmbeddingText, rebuildVectorIndex } from './rebuild.js';
+import type { WorkerRepositories } from './repositories.js';
 import { runRetentionCleanup } from './retention.js';
 
 /** Dependencies for IndexingWorker. */
 export interface IndexingWorkerDeps {
-  readonly db: DatabaseSync;
+  /**
+   * The repositories of the process. The daemon injects the instances of
+   * the runtime context, so the worker shares its store graph with the
+   * HTTP app and the semantic search.
+   */
+  readonly repositories: WorkerRepositories;
   readonly embedder: EmbeddingProvider;
-  readonly vectors: CardVectorStore;
+  readonly vectors: VectorStore;
   /** Events consumed per tick. */
   readonly batchSize?: number | undefined;
   /** Cards embedded per model inference call. */
@@ -48,10 +51,12 @@ export interface IndexingWorkerDeps {
  * The event-driven indexing worker. One instance per daemon process.
  */
 export class IndexingWorker {
-  private readonly events: EventStore;
-  private readonly cards: CardStore;
-  private readonly activity: ActivityLog;
-  private readonly workerState: WorkerStateStore;
+  /** The store graph the worker works on. */
+  private readonly repositories: WorkerRepositories;
+  private readonly events: WorkerRepositories['events'];
+  private readonly cards: WorkerRepositories['cards'];
+  private readonly activity: WorkerRepositories['activity'];
+  private readonly workerState: WorkerRepositories['workerState'];
   private readonly batchSize: number;
   private readonly embedBatchSize: number;
   private readonly pollIntervalMs: number;
@@ -61,10 +66,11 @@ export class IndexingWorker {
   private loopPromise: Promise<void> | null = null;
 
   constructor(private readonly deps: IndexingWorkerDeps) {
-    this.events = new EventStore(deps.db);
-    this.activity = new ActivityLog(deps.db);
-    this.cards = new CardStore(deps.db, { events: this.events, activity: this.activity });
-    this.workerState = new WorkerStateStore(deps.db);
+    this.repositories = deps.repositories;
+    this.events = this.repositories.events;
+    this.activity = this.repositories.activity;
+    this.cards = this.repositories.cards;
+    this.workerState = this.repositories.workerState;
     this.batchSize = deps.batchSize ?? 32;
     this.embedBatchSize = deps.embedBatchSize ?? 16;
     this.pollIntervalMs = deps.pollIntervalMs ?? 250;
@@ -150,7 +156,7 @@ export class IndexingWorker {
     // 3. Commit: events + indexed_at + activity + offset in one transaction.
     const newOffset = batch[batch.length - 1].id;
     const model = this.deps.embedder.modelId;
-    withTransaction(this.deps.db, () => {
+    this.repositories.transactions.transaction(() => {
       for (const event of batch) {
         this.events.markProcessed(event.id, this.errorFor(event, failures));
       }
@@ -162,7 +168,7 @@ export class IndexingWorker {
         }
       }
       if (ranRetention) {
-        runRetentionCleanup(this.deps.db, newOffset);
+        runRetentionCleanup(this.events, newOffset);
       }
       this.workerState.setLastEventId(newOffset);
     });
@@ -237,10 +243,10 @@ export class IndexingWorker {
     }
     // Model changed: the vectors are stale. Drop them and rebuild everything.
     await rebuildVectorIndex({
-      db: this.deps.db,
       embedder: this.deps.embedder,
       vectors: this.deps.vectors,
       embedBatchSize: this.embedBatchSize,
+      repositories: this.repositories,
     });
   }
 
@@ -251,7 +257,7 @@ export class IndexingWorker {
         processed = await this.tick();
       } catch (error) {
         // Unexpected (e.g. a busy database): log and retry on the next poll.
-        console.error('memhub: indexing worker tick failed:', errorMessage(error));
+        logDaemonError('indexing worker tick failed', error);
       }
       if (processed === 0 && !this.stopped) {
         await sleep(this.pollIntervalMs);
@@ -277,12 +283,4 @@ function parseCardId(payload: string): number | null {
   } catch {
     return null;
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }

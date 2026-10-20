@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'fs';
+import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -14,11 +15,26 @@ import {
   WORKER_START_RETRY_MS,
   type DaemonHandle,
 } from '../../src/daemon/start.js';
-import { AdminPasswordStore, hashPassword } from '../../src/daemon/admin-password.js';
+import { hashPassword } from '../../src/auth/admin-password.js';
+import { AdminPasswordStore } from '../../src/db/admin-password.js';
 import { openDatabase } from '../../src/db/database.js';
+import { PORT_ENV } from '../../src/config/env.js';
 import { LanceVectorIndex } from '../../src/storage/vector-index.js';
 import { getSetupCodePath, getTokenPath } from '../../src/paths.js';
 import { createTestDb, FakeEmbedder, FakeVectorStore, moduleNotFoundError } from '../test-utils.js';
+
+/** A free TCP port on the loopback interface. */
+async function freePort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const probe = createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      const port = typeof address === 'object' && address !== null ? address.port : 0;
+      probe.close(() => resolve(port));
+    });
+  });
+}
 
 describe('startDaemon', () => {
   // Regression guard: @hono/node-server replaces global Request/Response by
@@ -186,6 +202,87 @@ describe('startDaemon', () => {
     }
     expect(caught).toBeInstanceOf(PortInUseError);
     await blocker.close();
+  });
+
+  it('binds the port from MEMHUB_PORT when no port is given', async () => {
+    // Regression: the daemon used to hard-code the default port and
+    // ignored MEMHUB_PORT, so a library user got a different port than
+    // the CLI.
+    const t2 = createTestDb();
+    t2.close();
+    const port = await freePort();
+    const original = process.env[PORT_ENV];
+    process.env[PORT_ENV] = String(port);
+    let handle: DaemonHandle | undefined;
+    try {
+      handle = await startDaemon({
+        home: t2.home,
+        worker: { embedder: new FakeEmbedder(), vectors: new FakeVectorStore() },
+      });
+      expect(handle.port).toBe(port);
+    } finally {
+      if (original === undefined) delete process.env[PORT_ENV];
+      else process.env[PORT_ENV] = original;
+      await handle?.close();
+    }
+  });
+
+  it('rejects an invalid MEMHUB_PORT instead of silently binding the default', async () => {
+    // A typo in the environment must not bind 7800 behind the user's
+    // back: the daemon reports the value it could not read.
+    const t2 = createTestDb();
+    t2.close();
+    const original = process.env[PORT_ENV];
+    process.env[PORT_ENV] = 'not-a-port';
+    try {
+      await expect(
+        startDaemon({
+          home: t2.home,
+          worker: { embedder: new FakeEmbedder(), vectors: new FakeVectorStore() },
+        })
+      ).rejects.toThrow('invalid MEMHUB_PORT value: not-a-port');
+    } finally {
+      if (original === undefined) delete process.env[PORT_ENV];
+      else process.env[PORT_ENV] = original;
+    }
+  });
+});
+
+describe('teardown resilience', () => {
+  it('closes the HTTP server even when the worker fails to stop', { timeout: 15_000 }, async () => {
+    const t = createTestDb();
+    t.close();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const handle = await startDaemon({
+      home: t.home,
+      port: 0,
+      worker: { embedder: new FakeEmbedder(), vectors: new FakeVectorStore() },
+      // A worker whose shutdown fails: the teardown must not skip the
+      // steps after it (the HTTP socket would leak otherwise).
+      indexer: {
+        async start(): Promise<void> {},
+        async stop(): Promise<void> {
+          throw new Error('worker stop failed');
+        },
+      },
+    });
+    try {
+      const url = `http://127.0.0.1:${handle.port}/healthz`;
+      expect((await fetch(url)).status).toBe(200);
+
+      await handle.close();
+
+      // The teardown completed despite the failing worker.
+      await expect(handle.closed).resolves.toBeUndefined();
+      // The HTTP server was closed: the socket is gone.
+      await expect(fetch(url)).rejects.toThrow();
+      // The failure was reported.
+      const logged = log.mock.calls.map(call => call.join(' ')).join('\n');
+      expect(logged).toContain('indexing worker');
+    } finally {
+      log.mockRestore();
+      await handle.close();
+    }
   });
 });
 

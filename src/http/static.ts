@@ -14,13 +14,14 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve, sep } from 'path';
+import { getWebDistOverride, WEB_DIST_ENV } from '../config/env.js';
 import { notFound } from './errors.js';
 
 /** Placeholder written into web/index.html at build time. */
 export const TOKEN_PLACEHOLDER = '__MEMHUB_TOKEN__';
 
 /** Environment variable overriding the web dist directory (used by tests). */
-export const WEB_DIST_ENV = 'MEMHUB_WEB_DIST';
+export { WEB_DIST_ENV };
 
 /**
  * Default web dist directory: <repo>/web/dist, resolved relative to this
@@ -29,8 +30,8 @@ export const WEB_DIST_ENV = 'MEMHUB_WEB_DIST';
  * the fallback when the web UI has not been built yet.
  */
 export function defaultWebDist(): string {
-  const override = process.env[WEB_DIST_ENV];
-  if (override !== undefined && override.trim() !== '') {
+  const override = getWebDistOverride();
+  if (override !== null) {
     return resolve(override);
   }
   return resolveWebDist(dirname(fileURLToPath(import.meta.url)), path => existsSync(path));

@@ -136,7 +136,7 @@ npx pnpm run build:web    # build the web UI
 npx pnpm run quality      # lint + typecheck + format + coverage(≥80%) + build
 ```
 
-Source layout: `src/cli` (CLI) · `src/daemon` · `src/db` (SQLite) · `src/http` (Hono API) · `src/embedding` + `src/storage` (vectors) · `src/worker` (event worker) · `web/` (Preact UI) · `test/` mirrors `src/`.
+Source layout: `src/core` (pure domain: types, policies, ports) · `src/config` (env + paths) · `src/db` (SQLite) · `src/auth` · `src/services` · `src/embedding` + `src/storage` (vectors) · `src/worker` (event worker) · `src/http` (Hono API) · `src/runtime` (composition root) · `src/daemon` · `src/cli` · `web/` (Preact UI) · `test/` mirrors `src/`. The layer boundaries are documented in [docs/architecture.md](docs/architecture.md) and enforced by `pnpm run lint`.
 
 ## Roadmap
 

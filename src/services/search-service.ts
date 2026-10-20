@@ -3,15 +3,30 @@
  *
  * Every mode includes a keyword fallback over active cards that are not
  * vector-indexed yet, so a card is searchable from the moment it is
- * written. Results are deduplicated by card id and access is recorded
- * once per final result.
+ * written. Results are deduplicated by card id.
+ *
+ * ACCESS BOOKKEEPING: the service owns it. The retrieval backends must not
+ * record access themselves (see the `KeywordSearchBackend` and
+ * `SemanticSearchBackend` contracts in core/ports/search.ts): the service
+ * records it exactly once, for the final result set it returns, in every
+ * mode.
+ *
+ * The service depends on ports, never on concrete stores, so it can be
+ * exercised with plain in-memory fakes.
  */
 
-import type { CardStore } from '../db/cards.js';
-import type { KeywordSearch } from '../db/search.js';
-import type { MatchedBy, SearchMode, SearchHit } from '../db/types.js';
+import type { MatchedBy, SearchHit, SearchMode } from '../core/domain/types.js';
+import { isIndexReady } from '../core/policies/index-readiness.js';
+import { mergeSearchResults } from '../core/policies/search-merge.js';
+import type { CardRepository } from '../core/ports/repositories.js';
+import type { KeywordSearchBackend, SemanticSearchBackend } from '../core/ports/search.js';
 import { SEMANTIC_INSTALL_HINT } from '../semantic-stack.js';
-import type { SemanticSearch } from './semantic-search.js';
+
+// Whether the vector index is ready for semantic search: the question has
+// a single answer, the policy lives in the pure core layer. It is
+// re-exported here because the service is the historical home of that
+// helper.
+export { isIndexReady } from '../core/policies/index-readiness.js';
 
 /** Thrown when semantic mode is requested but the index is not ready. */
 export class IndexNotReadyError extends Error {
@@ -44,10 +59,12 @@ export interface SearchOutcome {
 
 /** Dependencies for SearchService. */
 export interface SearchServiceDeps {
-  readonly cards: CardStore;
-  readonly keyword: KeywordSearch;
+  /** Card access bookkeeping (hit_count / last_accessed_at). */
+  readonly cards: CardRepository;
+  /** Keyword retrieval backend. */
+  readonly keyword: KeywordSearchBackend;
   /** Null when the daemon runs without a semantic index (or in tests). */
-  readonly semantic: SemanticSearch | null;
+  readonly semantic: SemanticSearchBackend | null;
 }
 
 /** Mode router over keyword and semantic retrieval. */
@@ -64,31 +81,43 @@ export class SearchService {
    */
   async search(query: string, mode: SearchMode, limit: number): Promise<SearchOutcome> {
     if (mode === 'keyword') {
-      return { results: this.deps.keyword.search(query, limit), modeUsed: 'keyword' };
+      return this.finish(this.deps.keyword.search(query, limit), 'keyword', limit);
     }
 
     const semantic = this.deps.semantic;
-    if (semantic === null || !semantic.ready) {
+    if (semantic === null || !isIndexReady(semantic)) {
       if (mode === 'semantic') {
         if (semantic?.notInstalled === true) {
           throw new SemanticStackNotInstalledError();
         }
         throw new IndexNotReadyError();
       }
-      return { results: this.deps.keyword.search(query, limit), modeUsed: 'keyword' };
+      return this.finish(this.deps.keyword.search(query, limit), 'keyword', limit);
     }
 
-    const merged = new Map<number, SearchResultItem>();
-    for (const hit of await semantic.search(query, limit)) {
-      merged.set(hit.card.id, { card: hit.card, score: hit.score, matchedBy: 'semantic' });
-    }
-    for (const hit of this.deps.keyword.searchUnindexed(query, limit)) {
-      if (!merged.has(hit.card.id)) {
-        merged.set(hit.card.id, { card: hit.card, score: hit.score, matchedBy: hit.matchedBy });
-      }
-    }
-    const results = [...merged.values()].slice(0, limit);
+    const semanticHits: SearchHit[] = (await semantic.search(query, limit)).map(hit => ({
+      card: hit.card,
+      score: hit.score,
+      matchedBy: 'semantic',
+    }));
+    const keywordHits = this.deps.keyword.searchUnindexed(query, limit);
+    const merged = mergeSearchResults(semanticHits, keywordHits, limit);
+    return this.finish(merged, 'semantic', limit);
+  }
+
+  /**
+   * Truncate to the limit and record the access of the final result set.
+   *
+   * The access is recorded exactly once per search, for the cards that are
+   * actually returned - the backends never record it themselves.
+   */
+  private finish(
+    items: readonly SearchResultItem[],
+    modeUsed: 'keyword' | 'semantic',
+    limit: number
+  ): SearchOutcome {
+    const results = items.slice(0, limit);
     this.deps.cards.recordAccess(results.map(item => item.card.id));
-    return { results, modeUsed: 'semantic' };
+    return { results, modeUsed };
   }
 }

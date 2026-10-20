@@ -6,15 +6,10 @@
  * `memhub reindex` CLI command.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
-import { ActivityLog } from '../db/activity.js';
-import { CardStore } from '../db/cards.js';
-import { withTransaction } from '../db/database.js';
-import { EventStore } from '../db/events.js';
-import type { CardRecord } from '../db/types.js';
-import { WorkerStateStore } from '../db/worker-state.js';
-import type { EmbeddingProvider } from '../embedding/embedder.js';
-import type { CardVectorStore } from '../storage/vector-index.js';
+import type { CardRecord } from '../core/domain/types.js';
+import type { EmbeddingProvider } from '../core/ports/embedding.js';
+import type { VectorStore } from '../core/ports/vector.js';
+import type { WorkerRepositories } from './repositories.js';
 
 /** Outcome of a full rebuild. */
 export interface RebuildResult {
@@ -26,9 +21,15 @@ export interface RebuildResult {
 
 /** Dependencies for rebuildVectorIndex. */
 export interface RebuildDeps {
-  readonly db: DatabaseSync;
+  /**
+   * The repositories of the process. The daemon injects the instances of
+   * the runtime context, so the rebuild shares its store graph with the
+   * rest of the process; the reindex CLI builds them with the db layer
+   * factory.
+   */
+  readonly repositories: WorkerRepositories;
   readonly embedder: EmbeddingProvider;
-  readonly vectors: CardVectorStore;
+  readonly vectors: VectorStore;
   /** Cards embedded per model inference call. */
   readonly embedBatchSize?: number | undefined;
   /** Optional progress callback (invoked after each batch). */
@@ -47,17 +48,15 @@ export function cardEmbeddingText(card: CardRecord): string {
  */
 export async function rebuildVectorIndex(deps: RebuildDeps): Promise<RebuildResult> {
   const embedBatchSize = deps.embedBatchSize ?? 16;
-  const cards = new CardStore(deps.db, {
-    events: new EventStore(deps.db),
-    activity: new ActivityLog(deps.db),
-  });
-  const workerState = new WorkerStateStore(deps.db);
-  const activity = new ActivityLog(deps.db);
+  const repositories = deps.repositories;
+  const cards = repositories.cards;
+  const workerState = repositories.workerState;
+  const activity = repositories.activity;
 
   await deps.vectors.clear();
 
   const ids = [...cards.listActiveIds()];
-  withTransaction(deps.db, () => {
+  repositories.transactions.transaction(() => {
     cards.resetActiveIndexedAt();
     workerState.setModel(deps.embedder.modelId);
   });
@@ -97,7 +96,7 @@ export async function rebuildVectorIndex(deps: RebuildDeps): Promise<RebuildResu
 
     if (stored.length > 0) {
       const indexedAt = new Date().toISOString();
-      withTransaction(deps.db, () => {
+      repositories.transactions.transaction(() => {
         cards.setIndexedAt(stored, indexedAt);
         for (const id of stored) {
           activity.append('worker', 'card.indexed', id, {

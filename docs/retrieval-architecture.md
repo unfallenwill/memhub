@@ -8,19 +8,50 @@
 
 ## Module Boundaries
 
-- `src/db/search.ts` — `KeywordSearch`
-  - FTS5 over title+body, cue matching, and a LIKE fallback over active cards with `indexed_at IS NULL`.
-  - `search()` merges FTS + cues + fallback and records access; `searchUnindexed()` exposes only the fallback arm (used by semantic search).
-- `src/services/semantic-search.ts` — `SemanticSearch`
-  - Embeds the query, finds the top-k nearest vectors in LanceDB, joins back to SQLite and filters to active cards.
-- `src/services/search-service.ts` — `SearchService`
-  - Mode routing (`keyword` / `semantic` / `auto`), merging of semantic hits with the unindexed keyword fallback, dedupe by card id, single access recording per result.
-- `src/embedding/transformers-embedder.ts` — `TransformersEmbedder`
-  - Local ONNX sentence embeddings (`Xenova/all-MiniLM-L6-v2`, mean pooling, L2 normalization) via Transformers.js.
-- `src/storage/vector-index.ts` — `LanceVectorIndex`
-  - The `card_vectors` LanceDB table. Writes are delete+insert per `card_id` (idempotent).
-- `src/worker/indexer-worker.ts` — `IndexingWorker`
-  - Consumes `card.created` / `card.updated` events (plus the `job.*` timer commands), embeds in batches and commits "mark events processed + backfill `indexed_at` + activity log + advance offset" in one transaction.
+The retrieval path is spread over five layers. The rules that connect
+them (the full matrix, the third-party package rules and the acyclicity
+requirement) live in [architecture.md](architecture.md) and are enforced
+by `scripts/check-layers.mjs`.
+
+- **core** (pure, no dependencies) — the vocabulary of the retrieval path:
+  - `src/core/domain/types.ts` — `CardRecord`, `SearchHit`, `SearchMode`, `SEARCH_MODES`.
+  - `src/core/ports/search.ts` — `KeywordSearchBackend` and `SemanticSearchBackend`, the two contracts the service talks to. Both forbid recording access: the service records it exactly once for the final, merged result set.
+  - `src/core/ports/embedding.ts` — `EmbeddingProvider`.
+  - `src/core/ports/vector.ts` — `VectorStore` (and the deprecated `CardVectorStore` alias).
+  - `src/core/ports/repositories.ts` — the repository contracts the db adapters implement.
+  - `src/core/search/tokenize.ts` — the query tokenizer, the FTS5 quoting and the keyword scoring constants.
+  - `src/core/policies/search-merge.ts` — `mergeSearchResults`
+    - Merges two hit sets: the primary set wins a conflict on the card id, the secondary set only fills the gaps, the order is never re-sorted and the result is cut off at the limit.
+  - `src/core/policies/index-readiness.ts` — decides whether the semantic arm may run.
+- **db** (SQLite adapter) —
+  - `src/db/keyword-search.ts` — `KeywordSearch` (re-exported by `src/db/search.ts`)
+    - FTS5 over title+body, cue matching, and a LIKE fallback over active cards with `indexed_at IS NULL`.
+    - `search()` merges FTS + cues + fallback; `searchUnindexed()` exposes only the fallback arm (used by semantic search). Neither records access - the search service does that once for the final result set.
+- **services** (application layer, talks to the ports) —
+  - `src/services/semantic-search.ts` — `SemanticSearch`
+    - Embeds the query, finds the top-k nearest vectors in LanceDB, joins back to SQLite and filters to active cards.
+  - `src/services/search-service.ts` — `SearchService`
+    - Mode routing (`keyword` / `semantic` / `auto`), merging of semantic hits with the unindexed keyword fallback (through the core merge policy), dedupe by card id, single access recording per result.
+- **embedding** and **storage** (the optional backends) —
+  - `src/embedding/transformers-embedder.ts` — `TransformersEmbedder`
+    - Local ONNX sentence embeddings (`Xenova/all-MiniLM-L6-v2`, mean pooling, L2 normalization) via Transformers.js.
+  - `src/storage/vector-index.ts` — `LanceVectorIndex`
+    - The `card_vectors` LanceDB table. Writes are delete+insert per `card_id` (idempotent).
+- **worker** (the background indexer) —
+  - `src/worker/indexer-worker.ts` — `IndexingWorker`
+    - Consumes `card.created` / `card.updated` events (plus the `job.*` timer commands), embeds in batches and commits "mark events processed + backfill `indexed_at` + activity log + advance offset" in one transaction.
+
+### Known deviations
+
+There are none. The retrieval path crosses no layer boundary that the
+matrix forbids:
+
+- the vector store registry lives in the storage layer
+  (`src/storage/registry.ts`), not in the embedding layer,
+- the indexing worker logs through `src/core/util/log.ts`, not through
+  the runtime layer that sits above it,
+- the raw SQLite handle stays inside `src/db/` and `src/runtime/`; the
+  worker, the services and the auth layer only ever see ports.
 
 ## Search Flow
 

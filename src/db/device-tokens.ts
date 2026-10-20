@@ -9,16 +9,13 @@
 
 import { createHash } from 'crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import type { DeviceTokenRecord } from '../core/domain/types.js';
+import { systemClock, type Clock } from '../core/ports/clock.js';
+import type { DeviceTokenRepository } from '../core/ports/repositories.js';
 
-/** A device token row (hash only; the plaintext exists nowhere). */
-export interface DeviceTokenRecord {
-  readonly id: number;
-  readonly tokenHash: string;
-  readonly label: string;
-  readonly createdAt: string;
-  readonly lastUsedAt: string | null;
-  readonly revokedAt: string | null;
-}
+// The record type now lives in the pure domain layer; it is re-exported
+// here so existing import points keep working.
+export type { DeviceTokenRecord } from '../core/domain/types.js';
 
 /** SHA-256 hex digest of a token, as stored in device_tokens. */
 export function tokenHash(token: string): string {
@@ -37,19 +34,29 @@ function toRecord(row: Record<string, unknown>): DeviceTokenRecord {
 }
 
 /** Persistence for tokens minted by the device authorization flow. */
-export class DeviceTokenStore {
-  constructor(private readonly db: DatabaseSync) {}
+export class DeviceTokenStore implements DeviceTokenRepository {
+  private readonly clock: Clock;
+
+  constructor(
+    private readonly db: DatabaseSync,
+    clock: Clock = systemClock
+  ) {
+    this.clock = clock;
+  }
 
   /** Insert a new device token; returns the stored record. */
   create(hash: string, label: string): DeviceTokenRecord {
+    // One timestamp for the stored row and for the returned record, so
+    // the two can never disagree.
+    const now = this.clock.isoNow();
     const result = this.db
       .prepare('INSERT INTO device_tokens(token_hash, label, created_at) VALUES (?, ?, ?)')
-      .run(hash, label, new Date().toISOString());
+      .run(hash, label, now);
     return {
       id: Number(result.lastInsertRowid),
       tokenHash: hash,
       label,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
       lastUsedAt: null,
       revokedAt: null,
     };
@@ -83,14 +90,14 @@ export class DeviceTokenStore {
   touchLastUsed(id: number): void {
     this.db
       .prepare('UPDATE device_tokens SET last_used_at = ? WHERE id = ?')
-      .run(new Date().toISOString(), id);
+      .run(this.clock.isoNow(), id);
   }
 
   /** Revoke one token by id; returns false when it does not exist. */
   revoke(id: number): boolean {
     const result = this.db
       .prepare('UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
-      .run(new Date().toISOString(), id);
+      .run(this.clock.isoNow(), id);
     return Number(result.changes) > 0;
   }
 
@@ -98,7 +105,7 @@ export class DeviceTokenStore {
   revokeAll(): number {
     const result = this.db
       .prepare('UPDATE device_tokens SET revoked_at = ? WHERE revoked_at IS NULL')
-      .run(new Date().toISOString());
+      .run(this.clock.isoNow());
     return Number(result.changes);
   }
 }

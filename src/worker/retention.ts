@@ -7,7 +7,7 @@
  * never cleaned up.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
+import type { EventRepository } from '../core/ports/repositories.js';
 
 /** How long processed events are kept. */
 export const RETENTION_DAYS = 7;
@@ -24,16 +24,10 @@ export const DAY_MS = 86_400_000;
  * committing the job.retention_cleanup event).
  */
 export function runRetentionCleanup(
-  db: DatabaseSync,
+  events: EventRepository,
   offset: number,
   now: Date = new Date()
 ): number {
   const cutoff = new Date(now.getTime() - RETENTION_DAYS * DAY_MS).toISOString();
-  const result = db
-    .prepare(
-      `DELETE FROM events
-       WHERE processed_at IS NOT NULL AND id < ? AND created_at < ?`
-    )
-    .run(offset, cutoff);
-  return Number(result.changes);
+  return events.deleteProcessedBefore(offset, cutoff);
 }

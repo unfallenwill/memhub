@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   isModuleNotFound,
+  semanticInstallHint,
   SEMANTIC_INSTALL_HINT,
   SEMANTIC_PACKAGES,
+  type SemanticStackPackage,
 } from '../src/semantic-stack.js';
 import { moduleNotFoundError } from './test-utils.js';
 
@@ -37,6 +39,44 @@ describe('semantic stack metadata', () => {
   it('the install hint contains the install command', () => {
     expect(SEMANTIC_INSTALL_HINT).toContain(
       'npm install @huggingface/transformers @lancedb/lancedb'
+    );
+  });
+
+  it('the install hint keeps its published wording', () => {
+    expect(SEMANTIC_INSTALL_HINT).toBe(
+      'Semantic search needs the optional packages @huggingface/transformers and ' +
+        '@lancedb/lancedb, which are not installed. Install them next to memhub, e.g. ' +
+        '`npm install @huggingface/transformers @lancedb/lancedb`, then restart the daemon.'
+    );
+  });
+});
+
+describe('semanticInstallHint', () => {
+  it('names only the missing transformers package', () => {
+    const hint = semanticInstallHint('@huggingface/transformers');
+    expect(hint).toContain('@huggingface/transformers');
+    expect(hint).toContain('npm install @huggingface/transformers');
+    expect(hint).not.toContain('@lancedb/lancedb');
+  });
+
+  it('names only the missing lancedb package', () => {
+    const hint = semanticInstallHint('@lancedb/lancedb');
+    expect(hint).toContain('@lancedb/lancedb');
+    expect(hint).toContain('npm install @lancedb/lancedb');
+    expect(hint).not.toContain('@huggingface/transformers');
+  });
+
+  it('names every package when the whole stack is missing', () => {
+    expect(semanticInstallHint(SEMANTIC_PACKAGES)).toBe(SEMANTIC_INSTALL_HINT);
+  });
+
+  it('falls back to the whole stack for an empty list', () => {
+    expect(semanticInstallHint([])).toBe(SEMANTIC_INSTALL_HINT);
+  });
+
+  it('falls back to the whole stack for an unknown package', () => {
+    expect(semanticInstallHint('not-a-semantic-package' as SemanticStackPackage)).toBe(
+      SEMANTIC_INSTALL_HINT
     );
   });
 });

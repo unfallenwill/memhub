@@ -1,9 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Hono } from 'hono';
-import { AdminPasswordStore, hashPassword } from '../../src/daemon/admin-password.js';
+import { hashPassword } from '../../src/auth/admin-password.js';
+import { AdminPasswordStore } from '../../src/db/admin-password.js';
 import { createApp } from '../../src/http/app.js';
 import { DeviceTokenStore, tokenHash } from '../../src/db/device-tokens.js';
+import { createRuntimeContext, type RuntimeContext } from '../../src/runtime/context.js';
 import { createTestDb, type TestDb } from '../test-utils.js';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -21,6 +23,7 @@ const LOCAL_ENV = { incoming: { socket: { remoteAddress: '127.0.0.1' } } };
 describe('device auth flow', () => {
   let t: TestDb;
   let db: DatabaseSync;
+  let context: RuntimeContext;
   let requestShutdown: ReturnType<typeof vi.fn>;
   let webDist: string | undefined;
   let currentApp: Hono | undefined;
@@ -43,7 +46,7 @@ describe('device auth flow', () => {
   function app(): Hono {
     if (currentApp === undefined) {
       currentApp = createApp({
-        db,
+        context,
         token: TOKEN,
         version: '1.2.3-test',
         pid: 4242,
@@ -119,6 +122,7 @@ describe('device auth flow', () => {
   beforeEach(() => {
     t = createTestDb();
     db = t.db;
+    context = createRuntimeContext({ db });
     requestShutdown = vi.fn();
     webDist = undefined;
     currentApp = undefined;
@@ -383,7 +387,7 @@ describe('device auth flow', () => {
     it('asks for the setup code lazily (never after initialization)', async () => {
       let calls = 0;
       const countingApp = createApp({
-        db,
+        context,
         token: TOKEN,
         version: '1.2.3-test',
         pid: 4242,
@@ -638,7 +642,7 @@ describe('device auth flow', () => {
     it('does not inject the daemon token when injectWebToken is false', async () => {
       webDist = makeWebDist();
       const response = await createApp({
-        db,
+        context,
         token: TOKEN,
         version: '1.2.3-test',
         pid: 4242,
